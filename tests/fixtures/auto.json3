@@ -1,0 +1,5 @@
+{"events": [
+ {"tStartMs": 0, "dDurationMs": 8000, "wWinId": 1, "segs": [{"utf8": "so"}, {"utf8": " today", "tOffsetMs": 400}, {"utf8": " we", "tOffsetMs": 800}]},
+ {"tStartMs": 1500, "dDurationMs": 10, "aAppend": 1, "segs": [{"utf8": "\n"}]},
+ {"tStartMs": 1600, "dDurationMs": 6000, "wWinId": 1, "segs": [{"utf8": "bake"}, {"utf8": " bread", "tOffsetMs": 300}]}
+]}
