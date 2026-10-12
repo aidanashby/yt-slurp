@@ -91,6 +91,10 @@ Running the same channel again asks whether to **update** (fetch new videos and 
 - **Cookies cannot be read**: Chrome, Edge and Brave lock and encrypt their cookies on Windows. Close the browser fully, or sign in to YouTube in Firefox and choose Firefox.
 - **"Confirm you're not a bot"**: YouTube is limiting requests. yt-slurp pauses and offers cookies; otherwise wait an hour and run with `--update`.
 
+## Project status
+
+See [STATUS.md](STATUS.md) for what is done, what still needs testing and what comes next.
+
 ## Tests
 
 ```powershell
