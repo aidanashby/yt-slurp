@@ -1,0 +1,6 @@
+{"events": [
+ {"tStartMs": 0, "dDurationMs": 2500, "segs": [{"utf8": "Hello and welcome."}]},
+ {"tStartMs": 2600, "dDurationMs": 3000, "segs": [{"utf8": "Today: bread &amp; butter."}]},
+ {"tStartMs": 6000, "dDurationMs": 10, "segs": [{"utf8": "\n"}]},
+ {"tStartMs": 20000, "dDurationMs": 2000, "segs": [{"utf8": "After a long pause."}]}
+]}
