@@ -1238,7 +1238,7 @@ class App:
             "drag the WAVs in, and save each transcript into the whisper-transcripts folder. yt-slurp "
             "merges them by itself.\n\n"
             "5. The files for Claude and Gemini Notebook are under Open Claude files and Open Gemini files.\n\n"
-            "Settings are under the gear at the top right. Before your first real batch, use Tools, then "
+            "Settings is in the menu bar. Before your first real WAVs, use Tools, then "
             "Check the Whisper app keeps filenames.")
         self.settings["welcomed"] = True
         save_settings(self.settings)
