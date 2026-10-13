@@ -4,6 +4,8 @@ Collects transcripts for every video in a YouTube channel or playlist, ready to 
 
 ## Install (Windows 11, PowerShell)
 
+For a step-by-step walkthrough from a fresh machine, including testing, see [STATUS.md](STATUS.md).
+
 1. Python 3.10 or later, ffmpeg and Deno (yt-dlp needs Deno to read YouTube):
 
    ```powershell
