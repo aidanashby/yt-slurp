@@ -25,30 +25,39 @@ APP_NAME = "yt-slurp"
 REPO_DIR = Path(__file__).resolve().parent
 AUTO_MERGE_EVERY_MS = 5000
 POLL_MS = 100
+SEARCH_DELAY_MS = 150
+MAX_HIGHLIGHTS = 2000
 
 # Colours, after the Whisper Transcriber app.
 BG = "#ececec"
 CARD = "#ffffff"
 BORDER = "#d4d4d4"
 TEXT = "#2b2b2b"
-MUTED = "#7a7a7a"
-GREEN, GREEN_DARK = "#43a047", "#388e3c"
+# Every text and button colour pair meets WCAG AA (4.5:1) on its background.
+MUTED = "#5f5f5f"
+GREEN, GREEN_DARK = "#2e7d32", "#1b5e20"
 SLATE, SLATE_DARK = "#5b6f7a", "#4a5c66"
-BLUE, BLUE_DARK = "#1e88e5", "#1976d2"
-RED, RED_DARK = "#e53935", "#c62828"
+BLUE, BLUE_DARK = "#1565c0", "#0d47a1"
+RED, RED_DARK = "#c62828", "#b71c1c"
+FOCUS = "#111111"
 DISABLED = "#b9c3c8"
 BORDER_FINE = "#c4c4c4"
 SHADOW, SHADOW_SOFT = "#d9d9d9", "#e4e4e4"
 MATCH_BG, CURRENT_BG = "#fff59d", "#ffb74d"
 FONT = "Segoe UI"
 
-# Output kinds: label, colour. Chips are shown in alphabetical order of label.
+# Output kinds: label, colour, symbol. Each kind has a symbol as well as a
+# colour, so nothing depends on colour alone. Chips are in alphabetical order.
 KINDS = {
-    "link": ("Links", "#546e7a"),
-    "skipped": ("Skipped", "#b26a00"),
-    "transcript": ("Transcripts", "#2e7d32"),
-    "wav": ("WAVs", "#1565c0"),
+    "link": ("Links", "#546e7a", "\u2197"),
+    "skipped": ("Skipped", "#8a5300", "\u2298"),
+    "transcript": ("Transcripts", "#2e7d32", "\u25a0"),
+    "wav": ("WAVs", "#1565c0", "\u266a"),
 }
+
+
+def row_text(item: dict) -> str:
+    return f"{KINDS[item['kind']][2]}  {display_name(item)}"
 
 LANGUAGES = [
     ("en", "English"), ("es", "Spanish"), ("fr", "French"), ("de", "German"), ("it", "Italian"),
@@ -96,11 +105,29 @@ DEFAULT_SETTINGS = {
 
 
 def load_settings() -> dict:
+    """Saved settings, checked key by key: anything missing, unknown or of the
+    wrong type falls back to the default, so a damaged file can't stop the app."""
     data = dict(DEFAULT_SETTINGS)
     try:
-        data.update(json.loads((settings_dir() / "settings.json").read_text(encoding="utf-8")))
+        saved = json.loads((settings_dir() / "settings.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        pass
+        return data
+    if not isinstance(saved, dict):
+        return data
+    for key, default in DEFAULT_SETTINGS.items():
+        val = saved.get(key, default)
+        if isinstance(default, bool):
+            ok = isinstance(val, bool)
+        elif isinstance(default, (int, float)):
+            ok = isinstance(val, (int, float)) and not isinstance(val, bool) and val >= 0
+        elif isinstance(default, list):
+            ok = isinstance(val, list) and all(v in ys.TYPES for v in val)
+        else:
+            ok = isinstance(val, str)
+        if ok:
+            data[key] = val
+    if data["pace"] not in ys.PACES:
+        data["pace"] = DEFAULT_SETTINGS["pace"]
     return data
 
 
@@ -192,6 +219,23 @@ def folder_items(folder: Path) -> list[dict]:
                               "text": ys.watch_url(r["id"])})
     items.sort(key=lambda it: (display_name(it).lower(), it["kind"]))
     return items
+
+
+def line_starts(text: str) -> list[int]:
+    """Offsets where each line begins, for turning offsets into Tk indices."""
+    starts = [0]
+    i = text.find("\n")
+    while i >= 0:
+        starts.append(i + 1)
+        i = text.find("\n", i + 1)
+    return starts
+
+
+def text_index(starts: list[int], offset: int) -> str:
+    """A character offset as a Tk 'line.column' index, without Tk counting from the start."""
+    import bisect
+    line = bisect.bisect_right(starts, offset) - 1
+    return f"{line + 1}.{offset - starts[line]}"
 
 
 def find_matches(text: str, needle: str) -> list[int]:
@@ -319,6 +363,18 @@ def rounded_rect(canvas, x1, y1, x2, y2, r, **kw):
     return canvas.create_polygon(pts, smooth=True, **kw)
 
 
+def add_keyboard(widget, action):
+    """Make a drawn widget work from the keyboard: Tab to reach it, a focus ring,
+    and Enter or Space to press it."""
+    def focus(on):
+        widget.focused = on
+        widget.redraw()
+    widget.bind("<FocusIn>", lambda e: focus(True))
+    widget.bind("<FocusOut>", lambda e: focus(False))
+    for key in ("<Return>", "<space>", "<KP_Enter>"):
+        widget.bind(key, lambda e: (action(), "break")[1])
+
+
 class RoundButton(tk.Canvas):
     """A soft-cornered flat button, like the Whisper app's."""
 
@@ -328,20 +384,28 @@ class RoundButton(tk.Canvas):
         tmp = tk.Label(parent, text=text, font=font)
         w = width or tmp.winfo_reqwidth() + 28
         tmp.destroy()
-        super().__init__(parent, width=w, height=height, bg=bg, highlightthickness=0, cursor="hand2")
+        super().__init__(parent, width=w, height=height, bg=bg, highlightthickness=0, cursor="hand2",
+                         takefocus=1)
         self.text, self.command = text, command
         self.colour, self.hover_colour, self.fg = colour, hover, fg
         self.enabled = True
+        self.focused = False
         self.w, self.h = w, height
         self.draw(colour)
         self.bind("<Enter>", lambda e: self.enabled and self.draw(self.hover_colour))
         self.bind("<Leave>", lambda e: self.draw(self.colour if self.enabled else DISABLED))
         self.bind("<Button-1>", self.click)
+        add_keyboard(self, self.click)
+
+    def redraw(self):
+        self.draw(self.colour if self.enabled else DISABLED)
 
     def draw(self, fill):
         self.delete("all")
         rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 9, fill=fill, outline=fill)
         self.create_text(self.w / 2, self.h / 2, text=self.text, fill=self.fg, font=self.font)
+        if self.focused:
+            rounded_rect(self, 3, 3, self.w - 3, self.h - 3, 7, fill="", outline="white", width=2)
 
     def click(self, _=None):
         if self.enabled and self.command:
@@ -353,7 +417,7 @@ class RoundButton(tk.Canvas):
 
     def set_enabled(self, on: bool):
         self.enabled = on
-        self.configure(cursor="hand2" if on else "arrow")
+        self.configure(cursor="hand2" if on else "arrow", takefocus=1 if on else 0)
         self.draw(self.colour if on else DISABLED)
 
 
@@ -361,15 +425,27 @@ class SplitButton(tk.Canvas):
     """Slurp: the main area runs with the types in settings; the arrow opens a menu."""
 
     def __init__(self, parent, text, command, menu_command, width=150, height=38):
-        super().__init__(parent, width=width, height=height, bg=CARD, highlightthickness=0, cursor="hand2")
+        super().__init__(parent, width=width, height=height, bg=CARD, highlightthickness=0, cursor="hand2",
+                         takefocus=1)
         self.text, self.command, self.menu_command = text, command, menu_command
         self.w, self.h, self.arrow_w = width, height, 34
         self.enabled = True
+        self.focused = False
         self.hover = None
         self.draw()
         self.bind("<Motion>", self.motion)
         self.bind("<Leave>", lambda e: self.set_hover(None))
         self.bind("<Button-1>", self.click)
+        add_keyboard(self, lambda: self.enabled and self.command())
+        self.bind("<Down>", lambda e: self.open_menu())
+        self.bind("<Alt-Down>", lambda e: self.open_menu())
+
+    def redraw(self):
+        self.draw()
+
+    def open_menu(self):
+        if self.enabled:
+            self.menu_command(self.winfo_rootx() + self.w - self.arrow_w, self.winfo_rooty() + self.h)
 
     def zone(self, x):
         return "arrow" if x > self.w - self.arrow_w else "main"
@@ -400,18 +476,20 @@ class SplitButton(tk.Canvas):
                          font=(FONT, 11, "bold"))
         cx, cy = self.w - self.arrow_w / 2, self.h / 2
         self.create_polygon(cx - 5, cy - 2, cx + 5, cy - 2, cx, cy + 4, fill="white", outline="white")
+        if self.focused:
+            rounded_rect(self, 3, 3, self.w - 3, self.h - 3, 8, fill="", outline="white", width=2)
 
     def click(self, e):
         if not self.enabled:
             return
         if self.zone(e.x) == "arrow":
-            self.menu_command(self.winfo_rootx() + self.w - self.arrow_w, self.winfo_rooty() + self.h)
+            self.open_menu()
         else:
             self.command()
 
     def set_enabled(self, on: bool):
         self.enabled = on
-        self.configure(cursor="hand2" if on else "arrow")
+        self.configure(cursor="hand2" if on else "arrow", takefocus=1 if on else 0)
         self.draw()
 
 
@@ -420,27 +498,32 @@ class Chip(tk.Canvas):
 
     def __init__(self, parent, kind, on_toggle):
         self.kind = kind
-        self.label, self.colour = KINDS[kind]
+        self.label, self.colour, self.symbol = KINDS[kind]
         self.on = True
         self.count = 0
         self.on_toggle = on_toggle
-        super().__init__(parent, height=28, width=10, bg=CARD, highlightthickness=0, cursor="hand2")
+        super().__init__(parent, height=28, width=10, bg=CARD, highlightthickness=0, cursor="hand2", takefocus=1)
+        self.focused = False
         self.bind("<Button-1>", self.toggle)
+        add_keyboard(self, self.toggle)
+        self.draw()
+
+    def redraw(self):
         self.draw()
 
     def draw(self):
         self.delete("all")
-        text = f"{self.label}  {self.count}"
+        text = f"{self.symbol}  {self.label}  {self.count}"
         tmp = tk.Label(self, text=text, font=(FONT, 9))
-        w = tmp.winfo_reqwidth() + 36
+        w = tmp.winfo_reqwidth() + 22
         tmp.destroy()
         self.configure(width=w)
         fill = self.colour if self.on else CARD
         outline = self.colour if self.on else BORDER
         rounded_rect(self, 1, 2, w - 1, 26, 12, fill=fill, outline=outline)
-        dot = "white" if self.on else self.colour
-        self.create_oval(11, 10, 19, 18, fill=dot, outline=dot)
-        self.create_text(25, 14, text=text, anchor="w", fill="white" if self.on else MUTED, font=(FONT, 9))
+        self.create_text(11, 14, text=text, anchor="w", fill="white" if self.on else MUTED, font=(FONT, 9))
+        if self.focused:
+            rounded_rect(self, 1, 2, w - 1, 26, 12, fill="", outline=FOCUS, width=2)
 
     def toggle(self, _=None):
         self.on = not self.on
@@ -472,6 +555,7 @@ class SearchBox(tk.Frame):
             self.clear = tk.Label(self, text="×", bg=CARD, fg=MUTED, font=(FONT, 12), cursor="hand2")
             self.clear.bind("<Button-1>", lambda e: self.var.set(""))
         self.var.trace_add("write", lambda *a: self.changed())
+        self.entry.bind("<Escape>", lambda e: self.var.set(""))
 
     def changed(self):
         has = bool(self.var.get())
@@ -570,6 +654,9 @@ class App:
         self.build_top()
         self.build_bottom()
         self.build_middle()
+        # Tab order follows stacking order: put the bottom row after the panes.
+        self.btn_row.lift()
+        self.status_row.lift()
         self.refresh_sources()
         self.update_status()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -662,9 +749,12 @@ class App:
         row = tk.Frame(top, bg=CARD)
         row.pack(fill="x", padx=12, pady=(0, 10))
         link = tk.Label(row, text="Use a list of links from a file", bg=CARD, fg=BLUE, font=(FONT, 9, "underline"),
-                        cursor="hand2")
+                        cursor="hand2", takefocus=1, highlightthickness=1, highlightbackground=CARD,
+                        highlightcolor=FOCUS)
         link.pack(side="left")
         link.bind("<Button-1>", lambda e: self.pick_list())
+        for key in ("<Return>", "<space>"):
+            link.bind(key, lambda e: self.pick_list())
         self.list_label = tk.Label(row, text="", bg=CARD, fg=MUTED, font=(FONT, 9))
         self.list_label.pack(side="left", padx=8)
         self.source_var = tk.StringVar()
@@ -697,7 +787,7 @@ class App:
         listf = tk.Frame(left, bg=CARD)
         listf.pack(fill="both", expand=True, padx=(10, 4), pady=(0, 10))
         self.tree = ttk.Treeview(listf, show="tree", selectmode="browse", style="Out.Treeview")
-        for kind, (_, colour) in KINDS.items():
+        for kind, (_, colour, _) in KINDS.items():
             self.tree.tag_configure(kind, foreground=colour)
         sb = ttk.Scrollbar(listf, orient="vertical", command=self.tree.yview, style="Slim.Vertical.TScrollbar")
         self.tree.configure(yscrollcommand=sb.set)
@@ -710,9 +800,10 @@ class App:
         right = card(panes)
         srow = tk.Frame(right, bg=CARD)
         srow.pack(fill="x", padx=10, pady=(10, 6))
-        self.text_search = SearchBox(srow, "Search in this file", self.run_search, clear_button=True)
+        self.text_search = SearchBox(srow, "Search in this file", self.schedule_search, clear_button=True)
         self.text_search.pack(side="left", fill="x", expand=True)
         self.text_search.entry.bind("<Return>", lambda e: self.step_match(1))
+        self.line_starts = [0]
         self.text_search.entry.bind("<Shift-Return>", lambda e: self.step_match(-1))
         for sym, step in (("‹", -1), ("›", 1)):
             b = tk.Label(srow, text=sym, bg=CARD, fg=SLATE, font=(FONT, 16), cursor="hand2", padx=6)
@@ -739,7 +830,7 @@ class App:
         panes.add(right, minsize=320)
 
     def build_bottom(self):
-        status = tk.Frame(self.root, bg=BG)
+        status = self.status_row = tk.Frame(self.root, bg=BG)
         status.pack(side="bottom", fill="x", padx=14, pady=(0, 8))
         self.status_label = tk.Label(status, text="", bg=BG, fg=MUTED, font=(FONT, 9), anchor="w", cursor="hand2")
         self.status_label.pack(side="left", fill="x", expand=True)
@@ -747,7 +838,7 @@ class App:
         self.bar = ttk.Progressbar(status, mode="determinate", length=220)
         self.bar.pack(side="right")
 
-        btns = tk.Frame(self.root, bg=BG)
+        btns = self.btn_row = tk.Frame(self.root, bg=BG)
         btns.pack(side="bottom", fill="x", padx=12, pady=(8, 6))
         for text, cmd, colour, hover in (
                 ("Open results folder", self.open_results, SLATE, SLATE_DARK),
@@ -839,7 +930,7 @@ class App:
         self.tree.delete(*self.tree.get_children())
         for i, it in enumerate(self.items):
             if self.visible(it):
-                self.tree.insert("", "end", iid=str(i), text=f"●  {display_name(it)}", tags=(it["kind"],))
+                self.tree.insert("", "end", iid=str(i), text=row_text(it), tags=(it["kind"],))
         self.update_chip_counts()
         if sel is not None and str(self.items.index(sel)) in self.tree.get_children():
             self.tree.selection_set(str(self.items.index(sel)))
@@ -864,7 +955,7 @@ class App:
             return
         at_bottom = self.tree.yview()[1] >= 0.999
         iid = str(len(self.items) - 1)
-        self.tree.insert("", "end", iid=iid, text=f"●  {display_name(it)}", tags=(kind,))
+        self.tree.insert("", "end", iid=iid, text=row_text(it), tags=(kind,))
         if at_bottom and not self.tree.selection():
             # Follow new items only when already at the end. Scroll once Tk has
             # laid out the new row; scrolling straight away does nothing.
@@ -901,16 +992,33 @@ class App:
         self.preview_text.configure(state="disabled")
         self.run_search()
 
+    def schedule_search(self):
+        """Search shortly after typing stops, not on every keystroke."""
+        if getattr(self, "_search_job", None):
+            self.root.after_cancel(self._search_job)
+        self._search_job = self.root.after(SEARCH_DELAY_MS, self.run_search)
+
     def run_search(self):
+        self._search_job = None
         t = self.preview_text
         t.tag_remove("match", "1.0", "end")
         t.tag_remove("current", "1.0", "end")
         needle = self.text_search.get()
-        self.matches = find_matches(t.get("1.0", "end-1c"), needle)
-        for off in self.matches:
-            t.tag_add("match", f"1.0+{off}c", f"1.0+{off + len(needle)}c")
+        text = t.get("1.0", "end-1c")
+        self.matches = find_matches(text, needle)
+        self.line_starts = line_starts(text)
+        # Highlight in batches, and only the first MAX_HIGHLIGHTS; the arrows
+        # still step through every match.
+        ranges = []
+        for off in self.matches[:MAX_HIGHLIGHTS]:
+            ranges += [self.index_of(off), self.index_of(off + len(needle))]
+        for i in range(0, len(ranges), 400):
+            t.tag_add("match", *ranges[i:i + 400])
         self.match_i = 0 if self.matches else -1
         self.show_match()
+
+    def index_of(self, offset: int) -> str:
+        return text_index(self.line_starts, offset)
 
     def step_match(self, step):
         if self.matches:
@@ -929,8 +1037,9 @@ class App:
             self.match_label.configure(text="No matches")
             return
         off = self.matches[self.match_i]
-        t.tag_add("current", f"1.0+{off}c", f"1.0+{off + len(needle)}c")
-        t.see(f"1.0+{off}c")
+        start = self.index_of(off)
+        t.tag_add("current", start, self.index_of(off + len(needle)))
+        t.see(start)
         self.match_label.configure(text=f"{self.match_i + 1} of {len(self.matches)}")
 
     def open_selected(self, _=None):

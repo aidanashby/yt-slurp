@@ -190,6 +190,15 @@ def fmt_ts(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
+VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
+
+
+def valid_id(vid) -> bool:
+    """YouTube video IDs are 11 URL-safe characters. Anything else is refused
+    before it can reach a file path."""
+    return isinstance(vid, str) and VIDEO_ID_RE.fullmatch(vid) is not None
+
+
 def watch_url(vid: str) -> str:
     return f"https://www.youtube.com/watch?v={vid}"
 
@@ -1374,6 +1383,8 @@ class SourceRun:
     # ----- metadata -----
 
     def meta_path(self, vid):
+        if not valid_id(vid):
+            raise ValueError(f"not a YouTube video ID: {vid!r}")
         return self.meta_dir / f"{vid}.json"
 
     def load_meta(self, vid, max_age=None) -> dict | None:
@@ -1414,6 +1425,9 @@ class SourceRun:
         todo, short_n, short_by_type, total_by_type = [], 0, {}, {}
         for e, vtype in self.listing():
             vid = e["id"]
+            if not valid_id(vid):
+                say(f"  Ignoring a listing entry with an unexpected ID: {str(vid)[:40]!r}")
+                continue
             total_by_type[vtype] = total_by_type.get(vtype, 0) + 1
             row = self.manifest.get(vid)
             title = e.get("title") or (row or {}).get("title") or vid

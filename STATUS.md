@@ -1,6 +1,6 @@
 # yt-slurp: status
 
-Last updated: 13th October 2026 (window, round 2)
+Last updated: 13th October 2026 (pre-release review)
 
 ## Where it is
 
@@ -35,7 +35,8 @@ yt-slurp now has a window and a one-click installer. Double-click `yt-slurp.bat`
   - merge, and the Claude and Gemini Notebook combined files;
   - update and fresh re-runs, cookie retry, bot-check pause, a run lock per folder, and a clean stop.
   The command line (`yt-slurp ...`) still works.
-- **Tests:** 77 pytest tests, covering the pure functions, offline end-to-end runs, and the window driving a run, chips, filters, search, auto-scroll, Pause/Resume, settings and an automatic merge.
+- **Pre-release review** (see `docs/TEST-REPORT.md`): keyboard access and WCAG AA contrast throughout the window, a symbol as well as a colour for each kind of result, video IDs validated before use in any path, damaged settings files tolerated, and a fix for very slow search highlighting in long transcripts.
+- **Tests:** 108 pytest tests, covering the pure functions, offline end-to-end runs, negative and edge cases, and the window driving a run, chips, filters, search, auto-scroll, Pause/Resume, settings and an automatic merge.
 
 ## Decisions taken
 
@@ -61,7 +62,7 @@ yt-slurp now has a window and a one-click installer. Double-click `yt-slurp.bat`
 
 ### 1. Get the new version (this once only)
 
-Your copy of the repo predates the installer, so get it once by hand. Open PowerShell (press the Windows key, type `PowerShell`, press Enter), then paste:
+If your copy predates the installer, get the new version once by hand. Open PowerShell (press the Windows key, type `PowerShell`, press Enter), then paste:
 
 ```powershell
 cd <the folder you cloned yt-slurp into>
@@ -72,9 +73,9 @@ After this, `yt-slurp.bat` checks for updates itself.
 
 ### 2. Double-click `yt-slurp.bat`
 
-Open the folder you cloned yt-slurp into in File Explorer and double-click `yt-slurp.bat`. On your laptop you should see, in order:
+Open the folder you cloned yt-slurp into in File Explorer and double-click `yt-slurp.bat`. On a machine that already has Python, ffmpeg and Git, you should see, in order:
 
-1. "Python: C:\Program Files\Python311\python.exe" (or another 3.10 to 3.13), then "Creating the environment".
+1. "Python: ...python.exe" (a Python from 3.10 to 3.13), then "Creating the environment".
 2. "ffmpeg: found."
 3. "Deno was not found ... Install Deno with winget? [Y/N]". Press `Y`. It installs, then says "Deno: found."
 4. "Installing yt-slurp and its libraries". This takes a minute or two the first time.

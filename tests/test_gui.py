@@ -71,17 +71,17 @@ def test_slurp_shows_everything_together_and_auto_merges(app):
     assert kinds.count("link") == 3 and kinds.count("skipped") == 2
     shown = names(app)
     assert len(shown) == 8  # every kind shows by default
-    assert "●  Has Captions" in shown  # exact title first
-    assert "●  No Captiöns – Long, part 01 of 02" in shown
-    assert "●  Short one (shorter than 2 minutes)" in shown
-    assert "●  Hola (not in English, no captions)" in shown
+    assert "\u25a0  Has Captions" in shown  # exact title first
+    assert "\u266a  No Captiöns – Long, part 01 of 02" in shown
+    assert "\u2298  Short one (shorter than 2 minutes)" in shown
+    assert "\u2298  Hola (not in English, no captions)" in shown
     assert app.tree.column("#0", "width") > 0 and app.tree["columns"] == ""
 
     # Chips filter by kind; they are in alphabetical order.
     assert [c.label for c in app.chips.values()] == ["Links", "Skipped", "Transcripts", "WAVs"]
     for kind in ("link", "skipped", "wav"):
         app.chips[kind].toggle()
-    assert names(app) == ["●  Has Captions"]
+    assert names(app) == ["\u25a0  Has Captions"]
     for kind in ("link", "skipped", "wav"):
         app.chips[kind].toggle()
 
@@ -92,13 +92,15 @@ def test_slurp_shows_everything_together_and_auto_merges(app):
     assert len(names(app)) == 8
 
     # Preview and in-file search.
-    iid = next(i for i in app.tree.get_children() if app.tree.item(i, "text").endswith("Has Captions"))
+    iid = next(i for i in app.tree.get_children() if app.tree.item(i, "text") == "\u25a0  Has Captions")
     app.tree.selection_set(iid)
     app.root.update()
     assert "Title: Has Captions" in app.preview_text.get("1.0", "end")
     app.text_search.var.set("test")
+    app.run_search()  # normally runs 150 ms after typing stops
     assert len(app.matches) == 2 and app.match_label.cget("text") == "1 of 2"  # header and body
     app.text_search.var.set("e")
+    app.run_search()
     n = len(app.matches)
     assert n > 3
     app.step_match(-1)
@@ -198,3 +200,11 @@ def test_instance_lock_blocks_second_window(tmp_path, monkeypatch):
     second = gui.InstanceLock()
     assert not second.acquire()
     assert first.raise_wanted()
+
+
+def test_text_index_matches_tk():
+    import yt_slurp_gui as gui
+    text = "ab\ncde\n\nfg"
+    starts = gui.line_starts(text)
+    assert [gui.text_index(starts, o) for o in (0, 2, 3, 5, 7, 8, 9)] == \
+        ["1.0", "1.2", "2.0", "2.2", "3.0", "4.0", "4.1"]
