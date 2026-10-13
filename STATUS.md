@@ -42,58 +42,47 @@ The tool is built and passes its offline tests. It has not yet been run against 
 
 Do these in order. Type or paste each command into PowerShell and press Enter.
 
-### 1. Install the tools (once)
+### 1. Install Deno (once)
+
+The laptop already has Python (3.10, 3.11 and 3.14), ffmpeg (in `C:\ffmpeg\bin`), Git and winget, and PowerShell already allows scripts. Only Deno is missing. yt-dlp needs it to read YouTube.
 
 1. Open PowerShell. Press the Windows key, type `PowerShell`, and press Enter.
-2. Run each of these, one at a time. Accept any prompts.
+2. Install Deno:
 
    ```powershell
-   winget install Python.Python.3.12
-   winget install Gyan.FFmpeg
    winget install DenoLand.Deno
-   winget install Git.Git
    ```
 
 3. Close PowerShell and open a new window. New programs are only found in new windows.
-4. Check that each tool works:
+4. Check it:
 
    ```powershell
-   py --version
-   ffmpeg -version
    deno --version
-   git --version
    ```
 
-   `py --version` must show 3.10 or later. If any command says "is not recognized", close the window and open a new one. If it still fails, restart Windows.
+   If it says "is not recognized", open another new window. If it still fails, restart Windows.
 
-### 2. Get the code (once)
+### 2. Update the code
+
+The code is in the folder you cloned yt-slurp into. Get the latest version:
 
 ```powershell
-cd $HOME\Documents
-git clone https://github.com/aidanashby/yt-slurp.git
-cd yt-slurp
+cd <the folder you cloned yt-slurp into>
+git pull
 ```
-
-The code is now in `Documents\yt-slurp`. To get later updates, run `git pull` inside that folder.
 
 ### 3. Create the virtual environment (once)
 
-1. Create it:
+1. Create it with Python 3.11. Plain `py` would pick 3.14, which is newer than this has been tested on.
 
    ```powershell
-   py -m venv .venv
+   py -3.11 -m venv .venv
    ```
 
 2. Turn it on:
 
    ```powershell
    .venv\Scripts\Activate.ps1
-   ```
-
-   If PowerShell says "running scripts is disabled on this system", run the next command, type `Y` and press Enter, then run the activate command again:
-
-   ```powershell
-   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
    ```
 
    When the environment is on, the prompt starts with `(.venv)`.
@@ -116,7 +105,7 @@ The code is now in `Documents\yt-slurp`. To get later updates, run `git pull` in
 ### 4. Each time you come back
 
 ```powershell
-cd $HOME\Documents\yt-slurp
+cd <the folder you cloned yt-slurp into>
 .venv\Scripts\Activate.ps1
 ```
 
@@ -136,7 +125,7 @@ This checks that the Whisper app keeps the `[ID]` brackets in filenames.
 2. Open the Whisper app and add both WAV files from that folder.
 3. Transcribe them.
 4. For each result, click **Save as .txt**. In the save dialog:
-   1. Go to `Documents\yt-slurp\output\smoke-test\whisper-transcripts`.
+   1. Go to `Projects\yt-slurp\output\smoke-test\whisper-transcripts`.
    2. Check the suggested filename still contains `[AbC-d_123xY] part 01 of 02` (or `part 02 of 02`). Don't change it.
    3. Click Save.
 5. Merge the results:
@@ -202,9 +191,9 @@ Use `--limit 5` so each run takes a few minutes. Results go to `output\<channel 
 
 | What you see | What to do |
 |---|---|
-| `ffmpeg and ffprobe not found` | Run `winget install Gyan.FFmpeg`, then open a new PowerShell window. |
+| `ffmpeg and ffprobe not found` | ffmpeg is in `C:\\ffmpeg\\bin`. Check that folder is still on the PATH, or run `winget install Gyan.FFmpeg` and open a new window. |
 | A message about a JavaScript runtime | Run `winget install DenoLand.Deno`, then open a new window. |
-| `running scripts is disabled` | Run the `Set-ExecutionPolicy` command in step 3. |
+| `running scripts is disabled` | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` and type `Y`. |
 | `yt-slurp is not recognized` | The environment is off. Run `.venv\Scripts\Activate.ps1`. |
 | Cannot read browser cookies | Close the browser completely (check the system tray), or use Firefox. |
 | `confirm you're not a bot` | Wait an hour, then run the same command with `--update`. |
