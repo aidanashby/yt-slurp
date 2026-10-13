@@ -20,7 +20,7 @@ yt-slurp now has a window and a one-click installer. Double-click `yt-slurp.bat`
   - a link box with a Slurp split button (the arrow does just normal videos, just Shorts or just live streams), Pause/Resume and Stop, the option to use a file of links, and a list of channels you've done before;
   - one output list for transcripts, WAVs, links and skipped videos, colour-coded, filtered by chips (all on by default) and by a name filter; names are the exact YouTube title, with any extra (part number, skip reason) at the end; the list only follows new items when you're already at the bottom;
   - a content pane with in-file search, highlighting, and previous/next match;
-  - a settings window (gear button, or Tools, Settings) covering which videos, what to make (transcripts, WAVs, links), caption language, timestamps, WAV options, pace, folders, the Whisper app and advanced limits;
+  - a settings window (Settings in the menu bar) covering which videos, what to make (transcripts, WAVs, links), caption language, timestamps, WAV options, pace, folders, the Whisper app and advanced limits;
   - buttons for the results, WAV, Claude and Gemini folders, and to launch (or bring forward) the Whisper app;
   - a one-line status bar that opens the full log;
   - automatic merging of Whisper text as soon as a video's parts are all saved;
@@ -86,7 +86,7 @@ Next time, double-clicking just opens the window within a few seconds.
 
 ### 3. Set up the window once
 
-1. Click the gear (**Settings**) at the top right. Under **Whisper app**, click **Choose the Whisper app...** and pick the file you use to start it (its .exe, .bat, .py or shortcut).
+1. Click **Settings** in the menu bar. Under **Whisper app**, click **Choose the Whisper app...** and pick the file you use to start it (its .exe, .bat, .py or shortcut).
 2. Check **Its window title contains** matches a word in the Whisper app's title bar (default `Whisper`). yt-slurp uses this to bring the app forward instead of starting a second copy. Click **Save**.
 3. Tools menu, **Run the self-test**. It should say "Self-test passed".
 

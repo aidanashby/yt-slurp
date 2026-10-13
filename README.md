@@ -6,7 +6,7 @@ Collects transcripts for every video in a YouTube channel or playlist, ready to 
 
 Double-click `yt-slurp.bat`. It checks what the computer already has, asks before installing anything missing (Python, ffmpeg, Deno, the libraries), offers updates from GitHub, then opens the yt-slurp window. Once everything is set up, double-clicking just opens the window.
 
-In the window: paste a channel or playlist link and click **Slurp** (the arrow beside it does just normal videos, just Shorts or just live streams). Transcripts, WAV files, links and skipped videos appear on the left as they are made, each in its own colour; the chips above the list show or hide each kind, and a filter box narrows it by name. Click a result to read it on the right, where a search box highlights matches. **Pause** and **Stop** sit beside Slurp. Settings live behind the gear at the top right. Whisper text saved into `whisper-transcripts` is merged automatically. The status bar at the bottom opens the full log.
+In the window: paste a channel or playlist link and click **Slurp** (the arrow beside it does just normal videos, just Shorts or just live streams). Transcripts, WAV files, links and skipped videos appear on the left as they are made, each in its own colour; the chips above the list show or hide each kind, and a filter box narrows it by name. Click a result to read it on the right, where a search box highlights matches. **Pause** and **Stop** sit beside Slurp. Settings is in the menu bar. Whisper text saved into `whisper-transcripts` is merged automatically. The status bar at the bottom opens the full log.
 
 For the first-run walkthrough and test checklist, see [STATUS.md](STATUS.md).
 

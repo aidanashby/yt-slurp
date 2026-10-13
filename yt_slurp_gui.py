@@ -37,6 +37,8 @@ SLATE, SLATE_DARK = "#5b6f7a", "#4a5c66"
 BLUE, BLUE_DARK = "#1e88e5", "#1976d2"
 RED, RED_DARK = "#e53935", "#c62828"
 DISABLED = "#b9c3c8"
+BORDER_FINE = "#c4c4c4"
+SHADOW, SHADOW_SOFT = "#d9d9d9", "#e4e4e4"
 MATCH_BG, CURRENT_BG = "#fff59d", "#ffb74d"
 FONT = "Segoe UI"
 
@@ -565,7 +567,6 @@ class App:
         self.set_icon()
         self.style()
         self.build_menu()
-        self.build_header()
         self.build_top()
         self.build_bottom()
         self.build_middle()
@@ -623,34 +624,22 @@ class App:
     def build_menu(self):
         bar = tk.Menu(self.root)
         tools = tk.Menu(bar, tearoff=False)
-        tools.add_command(label="Settings...", command=self.open_settings)
-        tools.add_separator()
         tools.add_command(label="Check the Whisper app keeps filenames", command=self.smoke_test)
         tools.add_command(label="Rebuild Claude and Gemini files", command=self.rebuild_combined)
         tools.add_command(label="Open the manifest in Excel", command=self.open_manifest)
         tools.add_command(label="Show the full log", command=self.show_log)
         tools.add_separator()
         tools.add_command(label="Run the self-test", command=self.self_test)
+        bar.add_command(label="Settings", command=self.open_settings)
         bar.add_cascade(label="Tools", menu=tools)
         helpm = tk.Menu(bar, tearoff=False)
         helpm.add_command(label="How to use yt-slurp", command=self.welcome)
         bar.add_cascade(label="Help", menu=helpm)
         self.root.config(menu=bar)
 
-    def build_header(self):
-        head = tk.Frame(self.root, bg=BG)
-        head.pack(fill="x", padx=14, pady=(10, 0))
-        if self.icon_img is not None:
-            self.head_icon = self.icon_img.subsample(8, 8)
-            tk.Label(head, image=self.head_icon, bg=BG).pack(side="left")
-        tk.Label(head, text="yt-slurp", bg=BG, fg=TEXT, font=(FONT, 14, "bold")).pack(side="left", padx=(6, 0))
-        gear = tk.Label(head, text="⚙  Settings", bg=BG, fg=TEXT, font=(FONT, 11), cursor="hand2")
-        gear.pack(side="right")
-        gear.bind("<Button-1>", lambda e: self.open_settings())
-
     def build_top(self):
         top = card(self.root)
-        top.pack(fill="x", padx=12, pady=(8, 6))
+        top.pack(fill="x", padx=12, pady=(10, 6))
         inner = tk.Frame(top, bg=CARD)
         inner.pack(fill="x", padx=12, pady=10)
         self.url_box = SearchBox(inner, "Paste a YouTube channel or playlist link", lambda: None,
@@ -1274,10 +1263,16 @@ class App:
 def modal(parent, title) -> tuple[tk.Toplevel, tk.Frame]:
     top = tk.Toplevel(parent)
     top.title(title)
-    top.configure(bg=CARD)
+    top.configure(bg=SHADOW)
     top.transient(parent)
     top.resizable(False, False)
-    frame = tk.Frame(top, bg=CARD)
+    # A fine border with a soft shadow below and to the right, drawn as two
+    # graded edges; Windows adds its own drop shadow around the whole window.
+    edge = tk.Frame(top, bg=SHADOW_SOFT)
+    edge.pack(fill="both", expand=True, padx=(0, 0), pady=(0, 0))
+    border = tk.Frame(edge, bg=CARD, highlightthickness=1, highlightbackground=BORDER_FINE)
+    border.pack(fill="both", expand=True, padx=(0, 2), pady=(0, 2))
+    frame = tk.Frame(border, bg=CARD)
     frame.pack(fill="both", expand=True, padx=22, pady=18)
     top.after_idle(lambda: centre_over(top, parent))
     return top, frame
