@@ -2,32 +2,18 @@
 
 Collects transcripts for every video in a YouTube channel or playlist, ready to give to Claude or Gemini Notebook. Videos with captions become clean text. Videos without captions become WAV files for the Whisper transcriber app, and `yt-slurp merge` brings the app's saved text back in.
 
-## Install (Windows 11, PowerShell)
+## Install and run (Windows 11)
 
-For a step-by-step walkthrough from a fresh machine, including testing, see [STATUS.md](STATUS.md).
+Double-click `yt-slurp.bat`. It checks what the computer already has, asks before installing anything missing (Python, ffmpeg, Deno, the libraries), offers updates from GitHub, then opens the yt-slurp window. Once everything is set up, double-clicking just opens the window.
 
-1. Python 3.10 or later, ffmpeg and Deno (yt-dlp needs Deno to read YouTube):
+In the window: paste a channel or playlist link, click **Slurp**, and watch transcripts, WAV files or links appear on the right. Settings on the left are in plain English and are remembered. Questions pop up when yt-slurp needs an answer. Whisper text saved into `whisper-transcripts` is merged automatically.
 
-   ```powershell
-   winget install Gyan.FFmpeg
-   winget install DenoLand.Deno
-   ```
+For the first-run walkthrough and test checklist, see [STATUS.md](STATUS.md).
 
-   Open a new terminal afterwards so the PATH updates.
+## Command line (optional)
 
-2. In the repo folder:
+Everything the window does is also available from a terminal with the environment active (`.venv\Scripts\Activate.ps1`). `yt-slurp gui` opens the window.
 
-   ```powershell
-   py -m venv .venv
-   .venv\Scripts\activate
-   pip install -e .
-   ```
-
-3. When downloads start failing, update yt-dlp first: `pip install -U "yt-dlp[default]"`.
-
-Double-click `yt-slurp.bat` for a menu, or run `yt-slurp` in the activated terminal.
-
-## Use
 
 ```powershell
 yt-slurp https://www.youtube.com/@SomeChannel

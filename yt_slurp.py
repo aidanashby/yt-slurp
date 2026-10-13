@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import urllib.parse
@@ -710,27 +711,103 @@ def split_transcript(text: str, max_words: int) -> list[str]:
 # Console and files
 # =============================================================================
 
-def say(msg: str = "") -> None:
-    print(msg, flush=True)
-
-
 class NeedsAnswer(Exception):
     pass
 
 
-def ask(prompt: str) -> str:
-    try:
-        return input(prompt).strip()
-    except EOFError:
-        raise NeedsAnswer(prompt.strip())
+class ConsoleUI:
+    """Talks to the person through the terminal. The GUI supplies its own
+    class with the same methods (see yt_slurp_gui.py)."""
+
+    def say(self, msg: str = "") -> None:
+        print(msg, flush=True)
+
+    def progress(self, stage: str, done: int, total: int) -> None:
+        pass  # the per-video lines already show progress in a terminal
+
+    def counts(self, folder: Path, counts: dict) -> None:
+        pass
+
+    def item(self, kind: str, folder: Path, path: Path | None = None, text: str = "") -> None:
+        """A transcript, WAV or link has been created (kind: transcript, wav, link)."""
+
+    def _ask(self, prompt: str) -> str:
+        try:
+            return input(prompt).strip()
+        except EOFError:
+            raise NeedsAnswer(prompt.strip())
+
+    def choose(self, question: str, options: list[tuple[str, str]]) -> str:
+        """Ask a question with fixed answers; options are (key, label)."""
+        self.say(question)
+        for i, (_, label) in enumerate(options, 1):
+            self.say(f"  {i}  {label}")
+        while True:
+            ans = self._ask("Choose a number: ")
+            if ans.isdigit() and 1 <= int(ans) <= len(options):
+                return options[int(ans) - 1][0]
+            for key, _ in options:
+                if ans.lower() == key.lower():
+                    return key
+            self.say(f"Please enter a number from 1 to {len(options)}.")
+
+    def confirm_delete(self, message: str) -> bool:
+        self.say(message)
+        return self._ask("Type yes to delete them: ").lower() == "yes"
+
+    def choose_types(self, found: list[tuple[str, dict[str, int]]]) -> set[str]:
+        self.say("\nVideo types found:")
+        for name, counts in found:
+            self.say(f"  {name}: " + ", ".join(f"{t} {n}" for t, n in counts.items()))
+        self.say("  1 videos   2 shorts   3 streams   a all")
+        while True:
+            ans = self._ask("Which types? Enter numbers separated by commas, or a for all: ")
+            picked = parse_type_answer(ans)
+            if picked:
+                return picked
+            self.say("Please enter for example 1 or 1,3 or a.")
 
 
-def ask_choice(prompt: str, choices: dict[str, str]) -> str:
-    while True:
-        ans = ask(prompt).lower()
-        if ans in choices:
-            return choices[ans]
-        say(f"Please enter one of: {', '.join(choices)}")
+UI = ConsoleUI()
+STOP = threading.Event()  # set by the GUI's Stop button
+
+
+def set_ui(ui) -> None:
+    global UI
+    UI = ui
+
+
+def say(msg: str = "") -> None:
+    UI.say(msg)
+
+
+def hint(cli: str, gui: str) -> str:
+    """Advice worded for whichever interface is in use."""
+    return gui if getattr(UI, "gui", False) else cli
+
+
+def check_stop() -> None:
+    """Raise the same clean stop as Ctrl+C when the GUI's Stop is pressed."""
+    if STOP.is_set():
+        raise KeyboardInterrupt
+
+
+def parse_type_answer(ans: str) -> set[str]:
+    picked: set[str] = set()
+    for part in ans.lower().replace(" ", "").split(","):
+        if part in ("a", "all"):
+            picked.update(TYPES)
+        elif part in ("1", "2", "3"):
+            picked.add(TYPES[int(part) - 1])
+        elif part in TYPES:
+            picked.add(part)
+        else:
+            return set()
+    return picked
+
+
+BROWSER_OPTIONS = [("firefox", "Firefox (works while it is open)"), ("chrome", "Chrome"),
+                   ("edge", "Edge"), ("brave", "Brave"), ("none", "Don't use a browser")]
 
 
 def write_atomic(path: Path, text: str, encoding: str = "utf-8") -> None:
@@ -847,6 +924,72 @@ COOKIE_HELP = (
 # Network (yt-dlp)
 # =============================================================================
 
+def find_deno() -> str | None:
+    """Deno's path: the launcher's YT_SLURP_DENO, the PATH, or Deno's own install folder."""
+    for cand in (os.environ.get("YT_SLURP_DENO"), shutil.which("deno"),
+                 str(Path.home() / ".deno" / "bin" / ("deno.exe" if os.name == "nt" else "deno"))):
+        if cand and os.path.isfile(cand):
+            return cand
+    return None
+
+
+def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+class FolderLock:
+    """Stops two runs (or a run and a merge) writing to one folder at once."""
+
+    def __init__(self, folder: Path):
+        self.path = folder / DIR_WORK / "run.lock"
+        self.held = False
+
+    def __enter__(self):
+        if not self.acquire():
+            raise Stop(f"Another yt-slurp run is already working on {self.path.parent.parent}. "
+                       "Wait for it to finish, then try again.")
+        return self
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            other = int(read_text(self.path).strip() or 0)
+        except (OSError, ValueError):
+            other = 0
+        if other and other != os.getpid() and pid_alive(other):
+            return False
+        self.path.write_text(str(os.getpid()), encoding="utf-8")
+        self.held = True
+        return True
+
+    def release(self) -> None:
+        if self.held:
+            self.path.unlink(missing_ok=True)
+            self.held = False
+
+    def __exit__(self, *exc):
+        self.release()
+        return False
+
+
 class YdlLogger:
     def __init__(self):
         self.js_missing = False
@@ -888,6 +1031,9 @@ class Net:
             }
             if self.browser:
                 params["cookiesfrombrowser"] = (self.browser,)
+            deno = find_deno()
+            if deno:
+                params["js_runtimes"] = {"deno": {"path": deno}}
             params.update(extra)
             self._ydls[key] = YoutubeDL(params)
         return self._ydls[key]
@@ -975,16 +1121,20 @@ class CookieError(Exception):
 # Audio (ffmpeg)
 # =============================================================================
 
+# Hide the console window ffmpeg would otherwise open when the GUI (pythonw) runs it.
+NO_WINDOW = {"creationflags": 0x08000000} if os.name == "nt" else {}  # CREATE_NO_WINDOW
+
+
 def run_ffmpeg(args: list[str]) -> subprocess.CompletedProcess:
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", *args]
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", **NO_WINDOW)
 
 
 def probe_duration(path: Path) -> float:
     r = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "default=nw=1:nk=1", str(path)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace")
+        capture_output=True, text=True, encoding="utf-8", errors="replace", **NO_WINDOW)
     try:
         return float(r.stdout.strip())
     except ValueError:
@@ -1097,9 +1247,10 @@ def decide_mode(src: Source, args) -> None:
         src.mode = "fresh"
     else:
         rows = len(Manifest(folder / "manifest.csv").rows)
-        say(f"\n{folder} already has a manifest with {rows} videos.")
-        src.mode = ask_choice("(u) update: fetch new videos and retry failures, or (f) start fresh? [u/f] ",
-                              {"u": "update", "f": "fresh"})
+        src.mode = UI.choose(
+            f"{src.name} has been slurped before ({rows} videos). What would you like to do?",
+            [("update", "Get new videos and retry any that failed"),
+             ("fresh", "Start again from scratch")])
     if src.mode == "fresh":
         confirm_fresh(folder)
 
@@ -1107,9 +1258,9 @@ def decide_mode(src: Source, args) -> None:
 def confirm_fresh(folder: Path) -> None:
     doomed = [p for p in folder.iterdir() if p.name != DIR_WHISPER]
     nfiles = sum(1 for p in doomed for _ in ([p] if p.is_file() else p.rglob("*")))
-    say(f"Start fresh deletes {nfiles} files in {folder}, keeping {DIR_WHISPER}/ (your saved Whisper text).")
-    if ask("Type yes to delete them: ").lower() != "yes":
-        raise Stop("Nothing deleted. Run again and choose (u) to update instead.")
+    if not UI.confirm_delete(f"Starting again deletes {nfiles} files in {folder}. "
+                             f"Your saved Whisper text in {DIR_WHISPER} is kept."):
+        raise Stop("Nothing deleted. Run again and choose to get new videos instead.")
     for p in doomed:
         if p.is_dir():
             shutil.rmtree(p)
@@ -1136,27 +1287,10 @@ def choose_types(sources: list[Source], args) -> None:
             undecided.append(src)
     if not undecided:
         return
-    say("\nVideo types found:")
-    for src in undecided:
-        counts = ", ".join(f"{t} {len(src.tabs[t])}" for t in TYPES if t in src.tabs)
-        say(f"  {src.name}: {counts}")
-    say("  1 videos   2 shorts   3 streams   a all")
-    while True:
-        ans = ask("Which types? Enter numbers separated by commas, or a for all: ").lower().replace(" ", "")
-        picked = set()
-        for part in ans.split(","):
-            if part in ("a", "all"):
-                picked.update(TYPES)
-            elif part in ("1", "2", "3"):
-                picked.add(TYPES[int(part) - 1])
-            elif part in TYPES:
-                picked.add(part)
-            else:
-                picked = set()
-                break
-        if picked:
-            break
-        say("Please enter for example 1 or 1,3 or a.")
+    picked = UI.choose_types([(src.name, {t: len(src.tabs[t]) for t in TYPES if t in src.tabs})
+                              for src in undecided])
+    if not picked:
+        raise Stop("No video types chosen.")
     for src in undecided:
         src.types = [t for t in TYPES if t in picked and t in src.tabs]
 
@@ -1337,9 +1471,11 @@ class SourceRun:
         ready = []
         min_s = self.args.min_minutes * 60
         for i, vid in enumerate(todo, 1):
+            check_stop()
             if self.ctx.stop_all:
                 break
             row = self.manifest.get(vid)
+            UI.progress("Getting video details", i, len(todo))
             say(f"  [{i}/{len(todo)}] metadata: {row['title'][:70]}")
             try:
                 meta = self.fetch_meta(vid)
@@ -1368,26 +1504,33 @@ class SourceRun:
                 if self.manifest.get(vid)["status"] != "pending":
                     self.manifest.set(vid, status="pending")
                 ready.append(vid)
-            self.manifest.save()
+            r = self.manifest.get(vid)
+            if r["status"] not in ("skipped-short", "skipped-private"):
+                UI.item("link", self.folder, self.folder / "links.txt", link_line(r))
+            self.save()
         return ready
 
     def handle_bot_check(self) -> None:
         say("\nYouTube is asking to confirm you are not a bot, on several videos in a row.")
         self.ctx.bot_streak = 0
         if self.ctx.net.browser:
-            say("Cookies are already in use. Stopping here; wait an hour and run with --update.")
+            say(hint("Cookies are already in use. Stopping here; wait an hour and run with --update.",
+                     "Cookies are already in use. Stopping here; wait an hour, then Slurp the same link again."))
             self.ctx.stop_all = True
             return
         browser = ask_browser(self.args, "Sign in with cookies from a browser and carry on?")
         if not browser or not switch_to_cookies(self.ctx, browser):
-            say("Stopping this pass. Run again later with --update to continue.")
+            say(hint("Stopping this pass. Run again later with --update to continue.",
+                     "Stopping for now. Wait an hour, then Slurp the same link again to carry on."))
             self.ctx.stop_all = True
 
     def content_pass(self, ready: list[str]) -> None:
         for i, vid in enumerate(ready, 1):
+            check_stop()
             if self.ctx.stop_all:
                 break
             row = self.manifest.get(vid)
+            UI.progress("Making transcripts and WAVs", i, len(ready))
             say(f"  [{i}/{len(ready)}] {row['title'][:70]}")
             try:
                 self.process_content(vid)
@@ -1398,7 +1541,7 @@ class SourceRun:
                 if self.ctx.bot_streak >= BOT_CHECK_LIMIT:
                     self.manifest.save()
                     self.handle_bot_check()
-            self.manifest.save()
+            self.save()
 
     def process_content(self, vid: str) -> None:
         a = self.args
@@ -1418,9 +1561,11 @@ class SourceRun:
                                      row["duration"], vid, label)
                 for old in find_by_id(self.folder / DIR_TRANSCRIPTS, vid, ".txt"):
                     old.unlink()
-                write_atomic(self.folder / DIR_TRANSCRIPTS / f"{stem}.txt", f"{header}\n{text}\n")
+                out = self.folder / DIR_TRANSCRIPTS / f"{stem}.txt"
+                write_atomic(out, f"{header}\n{text}\n")
                 self.manifest.set(vid, status="transcript", source=kind, error="")
                 say(f"    transcript ({kind} captions)")
+                UI.item("transcript", self.folder, out)
                 return
 
         if not is_english(meta.get("language")) and not a.include_non_english:
@@ -1441,6 +1586,7 @@ class SourceRun:
         if audio is None:
             say("    downloading audio")
             audio = self.ctx.net.download_audio(vid, self.audio_dir)
+        check_stop()
         say("    converting to WAV")
         full = self.tmp_dir / f"{vid}.wav"
         to_wav(audio, full, a.wav_rate)
@@ -1464,13 +1610,18 @@ class SourceRun:
         dest_dir = self.folder / DIR_NEEDS / (batch_dir_name(batch) if batch else "")
         dest_dir.mkdir(parents=True, exist_ok=True)
         (self.folder / DIR_WHISPER).mkdir(exist_ok=True)
+        finals = []
         for n, piece in enumerate(pieces, 1):
-            os.replace(piece, dest_dir / f"{stem}{part_suffix(n, parts)}.wav")
+            final = dest_dir / f"{stem}{part_suffix(n, parts)}.wav"
+            os.replace(piece, final)
+            finals.append(final)
         if full.exists():
             full.unlink()
         audio.unlink(missing_ok=True)
         self.manifest.set(vid, status="wav", source="", wav_files=parts, batch=batch or "", error="")
         say(f"    {parts} WAV file{'s' if parts > 1 else ''} in {dest_dir.relative_to(self.folder)}")
+        for final in finals:
+            UI.item("wav", self.folder, final)
 
     # ----- whole source -----
 
@@ -1480,20 +1631,25 @@ class SourceRun:
             raise Stop(f"The output path {self.folder.resolve()} is too long to keep filenames under "
                        f"{MAX_PATH_LEN} characters. Use --output with a shorter folder, such as C:\\yt.")
         self.folder.mkdir(parents=True, exist_ok=True)
-        if self.tmp_dir.exists():
-            shutil.rmtree(self.tmp_dir, ignore_errors=True)
-        save_run(self.src, a)
-        try:
-            todo = only if only is not None else self.select()
-            self.manifest.save()
-            say(f"  {len(todo)} videos to process.")
-            ready = self.metadata_pass(todo)
-            write_links(self.folder, self.manifest)
-            if not a.links_only:
-                self.content_pass(ready)
-        finally:
-            self.manifest.save()
-            write_needs_list(self.folder, self.manifest)
+        with FolderLock(self.folder):
+            if self.tmp_dir.exists():
+                shutil.rmtree(self.tmp_dir, ignore_errors=True)
+            save_run(self.src, a)
+            try:
+                todo = only if only is not None else self.select()
+                self.save()
+                say(f"  {len(todo)} videos to process.")
+                ready = self.metadata_pass(todo)
+                write_links(self.folder, self.manifest)
+                if not a.links_only:
+                    self.content_pass(ready)
+            finally:
+                self.save()
+                write_needs_list(self.folder, self.manifest)
+
+    def save(self) -> None:
+        self.manifest.save()
+        UI.counts(self.folder, self.manifest.counts())
 
 
 def existing_batches(folder: Path) -> int:
@@ -1515,11 +1671,14 @@ def save_run(src: Source, args) -> None:
     write_atomic(src.folder / "run.json", json.dumps(run, indent=2))
 
 
+def link_line(r: dict) -> str:
+    return f"{iso_date(r['upload_date'])} | {fmt_duration(r['duration'])} | {r['title']} | {watch_url(r['id'])}"
+
+
 def write_links(folder: Path, manifest: Manifest) -> None:
     rows = [r for r in manifest.rows.values() if r["status"] not in ("skipped-short", "skipped-private")]
     rows.sort(key=lambda r: (r["upload_date"] or "99999999", r["id"]))
-    lines = [f"{iso_date(r['upload_date'])} | {fmt_duration(r['duration'])} | {r['title']} | {watch_url(r['id'])}"
-             for r in rows]
+    lines = [link_line(r) for r in rows]
     write_atomic(folder / "links.txt", "\n".join(lines) + ("\n" if lines else ""))
 
 
@@ -1529,7 +1688,8 @@ def write_needs_list(folder: Path, manifest: Manifest) -> None:
         return
     rows.sort(key=lambda r: (int(r["batch"] or 0), r["upload_date"], r["id"]))
     lines = ["Videos without captions, as WAV files for the Whisper app.",
-             f"Save each transcript into {DIR_WHISPER}/, then run: yt-slurp merge \"{folder}\"",
+             f"Save each transcript into {DIR_WHISPER}/. The yt-slurp window merges them by itself",
+             f"(or run: yt-slurp merge \"{folder}\").",
              "",
              "Batch | ID | WAV files | Status | Title"]
     for r in rows:
@@ -1608,6 +1768,33 @@ def report_combined(stats: dict, args) -> None:
 # =============================================================================
 
 def merge(folder: Path, args) -> None:
+    with FolderLock(folder):
+        _merge(folder, args)
+
+
+def mergeable_ids(folder: Path) -> list[str]:
+    """IDs of videos awaiting Whisper text whose parts are all saved. Cheap
+    enough for the GUI to call every few seconds."""
+    manifest_path = folder / "manifest.csv"
+    if not manifest_path.exists():
+        return []
+    waiting = {vid: r for vid, r in Manifest(manifest_path).rows.items() if r["status"] == "wav"}
+    if not waiting:
+        return []
+    files = []
+    for d in (folder / DIR_WHISPER, folder / DIR_NEEDS):
+        if d.is_dir():
+            files += [(str(p), 0.0) for p in d.rglob("*") if p.is_file() and p.suffix.lower() == ".txt"]
+    found, _, _ = collect_whisper_files(files)
+    ready = []
+    for vid, row in waiting.items():
+        expected = int(row["wav_files"] or 0) or 1
+        if vid in found and all(i in found[vid]["parts"] for i in range(1, expected + 1)):
+            ready.append(vid)
+    return ready
+
+
+def _merge(folder: Path, args) -> None:
     manifest_path = folder / "manifest.csv"
     if not manifest_path.exists():
         raise Stop(f"No manifest.csv in {folder}. Give the folder that yt-slurp created for the channel or playlist.")
@@ -1644,14 +1831,17 @@ def merge(folder: Path, args) -> None:
         stem = video_stem(row["upload_date"], fit_title(safe_filename(title), budget), vid)
         for old in find_by_id(folder / DIR_TRANSCRIPTS, vid, ".txt"):
             old.unlink()
-        write_atomic(folder / DIR_TRANSCRIPTS / f"{stem}.txt", f"{header}\n{body.strip()}\n")
+        out = folder / DIR_TRANSCRIPTS / f"{stem}.txt"
+        write_atomic(out, f"{header}\n{body.strip()}\n")
         manifest.set(vid, status="merged", source="whisper", error="")
         merged.append(row)
+        UI.item("transcript", folder, out)
         if args.delete_wavs:
             for wav in find_by_id(folder / DIR_NEEDS, vid, ".wav"):
                 wav.unlink()
     manifest.save()
     write_needs_list(folder, manifest)
+    UI.counts(folder, manifest.counts())
 
     say(f"Merged {len(merged)} videos.")
     for row, missing, expected in incomplete:
@@ -1730,7 +1920,7 @@ def speak_to_wav(text: str, dest: Path) -> bool:
         f"$s.Speak('{text.replace(chr(39), chr(39) * 2)}'); $s.Dispose()")
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", script],
-                           capture_output=True, timeout=60)
+                           capture_output=True, timeout=60, **NO_WINDOW)
         return r.returncode == 0 and dest.exists() and dest.stat().st_size > 1000
     except (OSError, subprocess.SubprocessError):
         return False
@@ -1741,12 +1931,8 @@ def speak_to_wav(text: str, dest: Path) -> bool:
 # =============================================================================
 
 def ask_browser(args, question: str) -> str | None:
-    say(question)
-    say("  1 chrome   2 edge   3 firefox   4 brave   n none")
-    choice = ask_choice("Browser: ", {"1": "chrome", "2": "edge", "3": "firefox", "4": "brave",
-                                      "chrome": "chrome", "edge": "edge", "firefox": "firefox",
-                                      "brave": "brave", "n": "", "none": ""})
-    return choice or None
+    choice = UI.choose(question, BROWSER_OPTIONS)
+    return None if choice == "none" else choice
 
 
 def switch_to_cookies(ctx: RunContext, browser: str) -> bool:
@@ -1775,7 +1961,8 @@ def signin_retry(runs: list[SourceRun], ctx: RunContext) -> None:
     if browser is None:
         browser = ask_browser(ctx.args, "Retry them with cookies from a browser where you are signed in to YouTube?")
     if not browser or browser == "none":
-        say("Left as needs-signin. Run with --update --cookies-from-browser firefox to try again.")
+        say(hint("Left as needs-signin. Run with --update --cookies-from-browser firefox to try again.",
+                 "Left as needing sign-in. Slurp the same link again and choose a browser when asked."))
         return
     if not switch_to_cookies(ctx, browser):
         return
@@ -1807,16 +1994,23 @@ def summarise(run: SourceRun, combined: dict) -> None:
         batches = sorted({int(r["batch"]) for r in waiting if r["batch"].isdigit()})
         say(f"  Next: {nfiles} WAV files for {len(waiting)} videos"
             + (f" in batches {', '.join(f'{b:02d}' for b in batches)}" if batches else "") + ".")
-        say(f"    1. Drag one batch folder's WAVs from {run.folder.resolve() / DIR_NEEDS} into the Whisper app.")
-        say(f"    2. Click Save as .txt for each into {run.folder.resolve() / DIR_WHISPER} before closing the app.")
-        say(f"    3. Repeat per batch, then run: yt-slurp merge \"{run.folder.resolve()}\"")
+        if getattr(UI, "gui", False):
+            say("    1. Click Open WAV folder and Launch Whisper app, then drag the WAVs into the app.")
+            say(f"    2. Click Save as .txt for each into {run.folder.resolve() / DIR_WHISPER} before closing the app.")
+            say("    3. yt-slurp merges them by itself as soon as all of a video's parts are saved.")
+        else:
+            say(f"    1. Drag one batch folder's WAVs from {run.folder.resolve() / DIR_NEEDS} into the Whisper app.")
+            say(f"    2. Click Save as .txt for each into {run.folder.resolve() / DIR_WHISPER} before closing the app.")
+            say(f"    3. Repeat per batch, then run: yt-slurp merge \"{run.folder.resolve()}\"")
     risky = [r for r in waiting if not r["language"] and non_ascii_share(r["title"]) > 0.5]
     for r in risky:
         say(f"  Check the language (no language in metadata): {r['title']} [{r['id']}]")
     if counts.get("needs-signin"):
-        say("  Signed-in videos: run with --update --cookies-from-browser firefox")
+        say(hint("  Signed-in videos: run with --update --cookies-from-browser firefox",
+                 "  Videos needing sign-in: Slurp the same link again and choose a browser when asked."))
     if counts.get("failed"):
-        say("  Failures: see the error column in manifest.csv; --update retries them.")
+        say(hint("  Failures: see the error column in manifest.csv; --update retries them.",
+                 "  Failures: Tools, Open the manifest shows why. Slurp the same link again to retry them."))
 
 
 def non_ascii_share(text: str) -> float:
@@ -1975,6 +2169,15 @@ def cmd_smoke(argv: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     setup_console()
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "gui":
+        import yt_slurp_gui
+        return yt_slurp_gui.main()
+    return run_command(argv)
+
+
+def run_command(argv: list[str]) -> int:
+    """Run one yt-slurp command and turn its outcome into an exit code."""
+    STOP.clear()
     try:
         if argv and argv[0] == "merge":
             cmd_merge(argv[1:])
@@ -1983,7 +2186,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             cmd_run(argv)
     except KeyboardInterrupt:
-        say("\nStopped. Progress is saved; run again with --update to continue.")
+        say(hint("\nStopped. Progress is saved; run again with --update to continue.",
+                 "\nStopped. Progress is saved; Slurp the same link again to carry on."))
         return 130
     except Stop as e:
         say(f"\n{e}")
@@ -1994,6 +2198,8 @@ def main(argv: list[str] | None = None) -> int:
     except NeedsAnswer as e:
         say(f"\nyt-slurp needs an answer to: {e}\nRun it in a terminal, or pass the matching option.")
         return 2
+    except SystemExit as e:  # argparse errors
+        return e.code if isinstance(e.code, int) else 2
     return 0
 
 

@@ -18,7 +18,7 @@ dev = ["pytest"]
 yt-slurp = "yt_slurp:main"
 
 [tool.setuptools]
-py-modules = ["yt_slurp"]
+py-modules = ["yt_slurp", "yt_slurp_gui"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

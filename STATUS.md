@@ -4,202 +4,122 @@ Last updated: 13th October 2026
 
 ## Where it is
 
-The tool is built and passes its offline tests. It has not yet been run against YouTube, because the build container cannot reach it. The next step is the first live run on Windows: follow "Next" below, step by step.
+yt-slurp now has a window and a one-click installer. Double-click `yt-slurp.bat`: it sets up whatever is missing and opens the window. Everything passes its offline tests, including the window driving a full run, but nothing has yet run against YouTube or on Windows, because the build container can reach neither. The next step is the first run on your laptop: follow "Next" below.
 
 ## Done
 
-- Full pipeline in `yt_slurp.py`:
-  - channel and playlist listing, with the type prompt and `--file` input;
-  - duration filter, metadata pass, `links.txt` and `manifest.csv`;
-  - captions to clean text (rolling duplicates removed, paragraph breaks, optional timestamps, header on each file);
-  - WAVs for videos without captions: 16 kHz mono 16-bit PCM, split at silence, in batch folders;
-  - `merge` for the Whisper app's .txt files;
-  - Claude and Gemini Notebook combined files;
-  - update and fresh re-runs, the cookie retry for sign-in videos, the bot-check pause, the JavaScript runtime and ffmpeg checks, and Ctrl+C handling;
-  - the `smoke-wav` command.
-- `pyproject.toml` (`pip install -e .` gives the `yt-slurp` command), `yt-slurp.bat` launcher menu, README.
-- 63 pytest tests: pure functions, plus an offline end-to-end run with a fake network layer and real ffmpeg.
+- **`yt-slurp.bat`** (installer and launcher):
+  - if the window is already open, brings it to the front instead of opening a second one;
+  - offers to update from GitHub when a newer version exists, and never updates if files have been edited locally;
+  - finds a Python from 3.10 up with Tkinter, preferring 3.10 to 3.13 (on your laptop, 3.11), and offers to install Python 3.12 only if none is suitable;
+  - finds ffmpeg and Deno on the PATH or in their usual install folders, offering winget installs only when they are missing;
+  - creates the `.venv` environment, and repairs it if broken;
+  - installs the libraries only when they have changed, and updates yt-dlp weekly;
+  - opens the window with no console left behind.
+- **`yt_slurp_gui.py`** (the window, Tkinter):
+  - a link box with Slurp and Stop buttons, the option to use a file of links, and a list of channels you've done before;
+  - plain-English settings on the left, saved between sessions;
+  - an output panel that shows transcripts, WAV files or links as they are made, with a preview of the selected file;
+  - progress bar, status counts and messages;
+  - buttons for the results, WAV, Claude and Gemini folders, and to launch (or bring forward) the Whisper app;
+  - questions as pop-up dialogs;
+  - automatic merging of Whisper text as soon as a video's parts are all saved;
+  - a Tools menu with the filename smoke test, merge now, open manifest and self-test.
+- **`yt_slurp.py`** (the pipeline):
+  - channel and playlist listing, duration filter, `links.txt` and `manifest.csv`;
+  - captions to clean text;
+  - WAVs for videos without captions, split at silence, in batch folders;
+  - merge, and the Claude and Gemini Notebook combined files;
+  - update and fresh re-runs, cookie retry, bot-check pause, a run lock per folder, and a clean stop.
+  The command line (`yt-slurp ...`) still works.
+- **Tests:** 66 pytest tests, covering the pure functions, an offline end-to-end run, and the window driving a run and an automatic merge.
 
 ## Decisions taken
 
-- Transcript route A: the user drags WAVs into the Whisper app and clicks Save as .txt into `whisper-transcripts\`. The app is unchanged.
-- WAVs go in batch folders of 10 (`--batch-files`), because the app loses unsaved results when it closes.
+- yt-slurp does not run Whisper. Your Whisper transcriber app (local or remote) transcribes the WAVs; you save each result into `whisper-transcripts`, and yt-slurp merges it.
+- WAVs go in batch folders of 10, because the app loses unsaved results when it closes.
 - Audio over 60 minutes is split into equal parts no longer than the limit, each cut at the nearest silence within two minutes.
-- `--fresh` keeps `whisper-transcripts\`.
-- Auto-captions are used only in the video's original language. Machine translations are ignored.
+- "Start again" keeps `whisper-transcripts`.
+- Auto-captions are used only in the video's original language; machine translations are ignored.
 - Gemini defaults: 50 sources and 400,000 words per source. Third-party guides give a limit of 500,000 words; Google's own page was not checked.
-- Statuses beyond the specification: `skipped-private` and `pending`.
-- `--cookies-from-browser` is used only for the end-of-run retry, so the main pass runs without cookies.
+- Signed-in videos use browser cookies only for the retry at the end of a run.
+- Closing a question dialog picks the cautious answer: keep what exists, or don't use a browser.
 
-## Not yet tested (needs the user's Windows machine)
+## Not yet tested (needs your laptop)
 
-- Any live YouTube request: listing, metadata, captions, audio download.
-- Whether the Whisper app's save dialog keeps the `[ID]` brackets. Run `yt-slurp smoke-wav` before any real batch.
-- Reading browser cookies, the bot-check pause, and the JavaScript runtime message.
-- `yt-slurp.bat` on Windows.
+- `yt-slurp.bat` itself. It is written for Windows `cmd` and cannot run in the build container.
+- Any live YouTube request.
+- Whether the Whisper app's save dialog keeps the `[ID]` brackets (use the smoke test before any real batch).
+- Reading browser cookies, and the Launch Whisper app button.
 
-## Next: how to set up and test on Windows
+## Next: first run on your laptop
 
-Do these in order. Type or paste each command into PowerShell and press Enter.
+### 1. Get the new version (this once only)
 
-### 1. Install Deno (once)
-
-The laptop already has Python (3.10, 3.11 and 3.14), ffmpeg (in `C:\ffmpeg\bin`), Git and winget, and PowerShell already allows scripts. Only Deno is missing. yt-dlp needs it to read YouTube.
-
-1. Open PowerShell. Press the Windows key, type `PowerShell`, and press Enter.
-2. Install Deno:
-
-   ```powershell
-   winget install DenoLand.Deno
-   ```
-
-3. Close PowerShell and open a new window. New programs are only found in new windows.
-4. Check it:
-
-   ```powershell
-   deno --version
-   ```
-
-   If it says "is not recognized", open another new window. If it still fails, restart Windows.
-
-### 2. Update the code
-
-The code is in the folder you cloned yt-slurp into. Get the latest version:
+Your copy of the repo predates the installer, so get it once by hand. Open PowerShell (press the Windows key, type `PowerShell`, press Enter), then paste:
 
 ```powershell
 cd <the folder you cloned yt-slurp into>
 git pull
 ```
 
-### 3. Create the virtual environment (once)
+After this, `yt-slurp.bat` checks for updates itself.
 
-1. Create it with Python 3.11. Plain `py` would pick 3.14, which is newer than this has been tested on.
+### 2. Double-click `yt-slurp.bat`
 
-   ```powershell
-   py -3.11 -m venv .venv
-   ```
+Open the folder you cloned yt-slurp into in File Explorer and double-click `yt-slurp.bat`. On your laptop you should see, in order:
 
-2. Turn it on:
+1. "Python: C:\Program Files\Python311\python.exe" (or another 3.10 to 3.13), then "Creating the environment".
+2. "ffmpeg: found."
+3. "Deno was not found ... Install Deno with winget? [Y/N]". Press `Y`. It installs, then says "Deno: found."
+4. "Installing yt-slurp and its libraries". This takes a minute or two the first time.
+5. "Opening the yt-slurp window...", and the window opens. A "How to use yt-slurp" message appears the first time.
 
-   ```powershell
-   .venv\Scripts\Activate.ps1
-   ```
+If a stage stops with a message instead, copy the whole black window's text (right-click the title bar, Edit, Select All, then Enter) and send it to Claude.
 
-   When the environment is on, the prompt starts with `(.venv)`.
+Next time, double-clicking just opens the window within a few seconds.
 
-3. Install yt-slurp and its test tools:
+### 3. Set up the window once
 
-   ```powershell
-   pip install -e ".[dev]"
-   ```
+1. Under **Whisper app** on the left, click **Choose the Whisper app...** and pick the file you use to start it (its .exe, .bat, .py or shortcut).
+2. Check **Its window title contains** matches a word in the Whisper app's title bar (default `Whisper`). yt-slurp uses this to bring the app forward instead of starting a second copy.
+3. Tools menu, **Run the self-test**. It should say "Self-test passed".
 
-4. Check the install:
+### 4. Smoke test (before any real batch)
 
-   ```powershell
-   yt-slurp --help
-   python -m pytest
-   ```
+1. Tools menu, **Check the Whisper app keeps filenames**. Two short test WAVs are made and their folder opens.
+2. Click **Launch Whisper app**, and drag both WAVs into it. Transcribe them.
+3. Click **Save as .txt** for each, and save into the `whisper-transcripts` folder the message names. Keep the suggested name.
+4. Within a few seconds yt-slurp says **Test passed**. If nothing happens, the app changed the filenames: send Claude the saved names.
 
-   The first command lists the options. The second must end with `63 passed`.
+### 5. Live tests
 
-### 4. Each time you come back
+In the settings, tick **Test run: only do the first few videos** (5 is fine) for these.
 
-```powershell
-cd <the folder you cloned yt-slurp into>
-.venv\Scripts\Activate.ps1
-```
+1. **A small channel.** Paste its link (for example `https://www.youtube.com/@SomeChannel`) and click **Slurp**. Answer the question about which kinds of video. Watch transcripts appear on the right; click one to read it. Choose **Links** above the list to see the links.
+2. **A playlist.** Paste the playlist link and click **Slurp**.
+3. **A long video with no captions** (over 60 minutes). yt-slurp works on channels and playlists, so put the video in a playlist of its own (it can be unlisted) and slurp that. Choose **WAV files** above the list; there should be two or more parts. Click **Open WAV folder** and **Launch Whisper app**, transcribe the parts, and save each into `whisper-transcripts`. When all parts are saved, the merged transcript appears under Transcripts by itself.
+4. **A non-English video with no English captions**, in a playlist the same way. It should be counted as skipped.
+5. **Optional: a members-only or age-restricted video.** At the end of the run, yt-slurp asks which browser to use. Sign in to YouTube in Firefox first, then choose Firefox.
 
-You can also double-click `yt-slurp.bat` in File Explorer instead. It turns the environment on and shows a menu.
+### 6. What to send Claude
 
-### 5. Smoke test (before any real batch)
+- Anything that looked wrong, and the messages in the box at the bottom of the window (click in it, press Ctrl+A, then Ctrl+C).
+- If the window shows "Something went wrong", the file it names (`error.log`).
+- For a failed video: Tools, **Open the manifest in Excel**, and copy its row.
 
-This checks that the Whisper app keeps the `[ID]` brackets in filenames.
-
-1. Make the test files:
-
-   ```powershell
-   yt-slurp smoke-wav
-   ```
-
-   This writes two WAV files to `output\smoke-test\needs-transcription\batch 01\`.
-2. Open the Whisper app and add both WAV files from that folder.
-3. Transcribe them.
-4. For each result, click **Save as .txt**. In the save dialog:
-   1. Go to `Projects\yt-slurp\output\smoke-test\whisper-transcripts`.
-   2. Check the suggested filename still contains `[AbC-d_123xY] part 01 of 02` (or `part 02 of 02`). Don't change it.
-   3. Click Save.
-5. Merge the results:
-
-   ```powershell
-   yt-slurp merge "output\smoke-test"
-   ```
-
-6. Pass: it prints `Merged 1 videos.`, and `output\smoke-test\transcripts\` holds one file containing both parts. Fail: write down exactly how the saved filename differs from the WAV name, and send it to me.
-
-### 6. Live test runs
-
-Use `--limit 5` so each run takes a few minutes. Results go to `output\<channel or playlist name>\`. When a run asks a question, type the answer shown in brackets and press Enter.
-
-1. **Small channel, links only.** Replace `@CHANNEL` with the channel's handle:
-
-   ```powershell
-   yt-slurp https://www.youtube.com/@CHANNEL --links-only --limit 5
-   ```
-
-   If it asks which types, type `1` for normal videos. Check that `links.txt` lists 5 videos with dates and durations.
-
-2. **Same channel, full run:**
-
-   ```powershell
-   yt-slurp https://www.youtube.com/@CHANNEL --limit 5 --update
-   ```
-
-   Check these:
-   - `transcripts\`: open two files. They should read as clean paragraphs with no repeated lines.
-   - `manifest.csv`: open it in Excel. The status column shows what happened to each video.
-   - `claude-parts\` and `gemini-notebook\` hold the combined files.
-
-3. **Playlist.** Keep the quotes, because the address contains `?`:
-
-   ```powershell
-   yt-slurp "https://www.youtube.com/playlist?list=PLAYLIST_ID" --limit 5
-   ```
-
-4. **Long video with no captions** (over 60 minutes). yt-slurp rejects single-video links, so add the video to a playlist of its own (it can be unlisted) and run that playlist:
-
-   ```powershell
-   yt-slurp "https://www.youtube.com/playlist?list=PLAYLIST_ID"
-   ```
-
-   Check that `needs-transcription\batch 01\` holds two or more WAV parts. Transcribe and save them as in the smoke test, saving into that folder's `whisper-transcripts`. Then run:
-
-   ```powershell
-   yt-slurp merge "output\PLAYLIST NAME"
-   ```
-
-5. **Non-English video with no English captions.** Use a playlist the same way. In `manifest.csv` the video should show `skipped-non-english`.
-
-6. **Optional, members-only or age-restricted video.** When the run asks about cookies at the end, sign in to YouTube in Firefox first, then type `3` for Firefox.
-
-### 7. What to send me
-
-- The terminal output from any run that went wrong. Select it with the mouse, press Ctrl+C to copy it, and paste it into the chat.
-- `manifest.csv` from that run's folder, or just its rows with `failed` in the status column.
-- For any transcript that looks wrong, its filename and what is wrong with it.
-
-### 8. If something goes wrong
+### 7. If something goes wrong
 
 | What you see | What to do |
 |---|---|
-| `ffmpeg and ffprobe not found` | ffmpeg is in `C:\ffmpeg\bin`. Check that folder is still on the PATH, or run `winget install Gyan.FFmpeg` and open a new window. |
-| A message about a JavaScript runtime | Run `winget install DenoLand.Deno`, then open a new window. |
-| `running scripts is disabled` | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` and type `Y`. |
-| `yt-slurp is not recognized` | The environment is off. Run `.venv\Scripts\Activate.ps1`. |
-| Cannot read browser cookies | Close the browser completely (check the system tray), or use Firefox. |
-| `confirm you're not a bot` | Wait an hour, then run the same command with `--update`. |
-| Rows with `failed` in `manifest.csv` | Copy the text from the error column and send it to me. |
+| The black window stops with a message | Copy its text and send it to Claude. |
+| Double-clicking does nothing visible | yt-slurp may already be open behind other windows. Check the taskbar. |
+| "No Python 3.10 or later with Tkinter" | Press `Y` to install Python 3.12, or install Python from python.org with "tcl/tk and IDLE" ticked. |
+| A message about a JavaScript runtime | Double-click `yt-slurp.bat` again; it offers to install Deno. |
+| Cannot read browser cookies | Close the browser completely (check the system tray), or choose Firefox. |
+| YouTube asks to confirm you are not a bot | Wait an hour, then Slurp the same link again. |
+| Videos counted as failed | Tools, Open the manifest in Excel, and send Claude the error column. |
 
 ## Possible later work
 
-- Route C: transcribe the WAVs inside yt-slurp with faster-whisper, if the manual saves become tedious. Merge already accepts .txt files from any source.
 - Check Google's own Gemini Notebook limits and adjust the constants.

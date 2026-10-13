@@ -82,7 +82,7 @@ def run(*argv):
 
 
 def test_full_pipeline(fake, monkeypatch):
-    answers = iter(["n"])  # decline cookies for the members-only video
+    answers = iter(["none"])  # decline cookies for the members-only video
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     assert run() == 0
     folder = fake / "output" / "Test Channel"
@@ -136,14 +136,14 @@ def test_full_pipeline(fake, monkeypatch):
 
 
 def test_links_only_and_fresh_keeps_whisper(fake, monkeypatch):
-    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "none")
     assert run("--links-only") == 0
     folder = fake / "output" / "Test Channel"
     assert (folder / "links.txt").exists() and not (folder / "transcripts").exists()
     assert ys.Manifest(folder / "manifest.csv").get("capt0000001")["status"] == "pending"
     (folder / "whisper-transcripts").mkdir()
     (folder / "whisper-transcripts" / "keep.txt").write_text("x", encoding="utf-8")
-    answers = iter(["yes", "n"])
+    answers = iter(["yes", "none"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     assert run("--fresh") == 0
     assert (folder / "whisper-transcripts" / "keep.txt").exists()
