@@ -6,7 +6,7 @@ Collects transcripts for every video in a YouTube channel or playlist, ready to 
 
 Double-click `yt-slurp.bat`. It checks what the computer already has, asks before installing anything missing (Python, ffmpeg, Deno, the libraries), offers updates from GitHub, then opens the yt-slurp window. Once everything is set up, double-clicking just opens the window.
 
-In the window: paste a channel or playlist link, click **Slurp**, and watch transcripts, WAV files or links appear on the right. Settings on the left are in plain English and are remembered. Questions pop up when yt-slurp needs an answer. Whisper text saved into `whisper-transcripts` is merged automatically.
+In the window: paste a channel or playlist link and click **Slurp** (the arrow beside it does just normal videos, just Shorts or just live streams). Transcripts, WAV files, links and skipped videos appear on the left as they are made, each in its own colour; the chips above the list show or hide each kind, and a filter box narrows it by name. Click a result to read it on the right, where a search box highlights matches. **Pause** and **Stop** sit beside Slurp. Settings live behind the gear at the top right. Whisper text saved into `whisper-transcripts` is merged automatically. The status bar at the bottom opens the full log.
 
 For the first-run walkthrough and test checklist, see [STATUS.md](STATUS.md).
 
@@ -31,12 +31,13 @@ yt-slurp smoke-wav
 | `--min-minutes N` | 5 | Skip shorter videos (Shorts need `0`) |
 | `--lang CODE` | `en` | Caption language |
 | `--timestamps` | off | `[mm:ss]` at the start of each paragraph |
-| `--links-only` | off | Stop after links.txt |
+| `--no-transcripts` / `--no-wavs` / `--no-links` | off | Leave out transcripts, WAVs or links.txt |
+| `--links-only` | off | Same as `--no-transcripts --no-wavs` |
+| `--pace P` | `normal` | Wait between requests: `normal` 2 to 5 s, `slow` 5 to 10 s, `very-slow` 10 to 20 s |
 | `--update` / `--fresh` | ask | What to do when the folder already has a manifest |
 | `--include-non-english` | off | Make WAVs for non-English videos without captions |
 | `--wav-rate HZ` | 16000 | WAV sample rate |
 | `--chunk-minutes N` | 60 | Split longer audio into parts; 0 disables |
-| `--batch-files N` | 10 | WAVs per batch folder; 0 disables |
 | `--cookies-from-browser B` | ask | `chrome`, `edge`, `firefox`, `brave` or `none`, for members-only and age-restricted videos |
 | `--limit N` | all | Process only the first N videos (for testing) |
 | `--chunk-words N` | 100000 | Words per Claude part (run and merge) |
@@ -46,25 +47,25 @@ yt-slurp smoke-wav
 
 ## Output
 
-Each channel or playlist gets `output\<name>\`:
+Each channel or playlist gets `output\<name>\`. Files are named title first, then the video ID and upload date, for example `Some Talk [dQw4w9WgXcQ] 2024-03-08.txt`. Links, the WAV list and the combined files are rewritten after every 10 videos, so results arrive during a long run.
 
-- `links.txt`: date, duration, title and URL of every video.
+- `links.txt`: the URL of every video, one per line, nothing else.
 - `manifest.csv`: one row per video with its status and any error. Opens in Excel.
 - `transcripts\`: one text file per video, each starting with title, channel, date, duration and URL.
-- `claude-parts\`: all transcripts in date order, in files of up to 100,000 words.
+- `claude-parts\`: all transcripts in upload-date order, in files of up to 100,000 words.
 - `gemini-notebook\`: one file per video when there are 50 or fewer, otherwise 50 files of roughly equal size.
-- `needs-transcription\batch NN\`: WAVs for videos without captions. `needs-transcription.txt` lists them.
+- `needs-transcription\`: WAVs for videos without captions. `needs-transcription.txt` lists them.
 - `whisper-transcripts\`: where you save the Whisper app's text.
 
 ## Videos without captions
 
 Before the first real batch, run `yt-slurp smoke-wav` and follow its instructions. It checks that the Whisper app's save dialog keeps the `[ID]` brackets in the filename. If it does not, change `ID_OPEN` and `ID_CLOSE` at the top of `yt_slurp.py`.
 
-Then, for each batch folder:
+Then:
 
-1. Drag the batch's WAVs into the Whisper app.
+1. Drag the WAVs from `needs-transcription\` into the Whisper app, a few at a time.
 2. When each finishes, click **Save as .txt** and save into `whisper-transcripts\`. Keep the suggested filename. Save every file before closing the app, because it does not keep results.
-3. When the batches are done, run `yt-slurp merge "output\<name>"`.
+3. The window merges them by itself. From the command line, run `yt-slurp merge "output\<name>"`.
 
 Merge stitches a video's parts in order, adds the header, and rebuilds the combined files. It lists videos with missing parts and any text files it could not match.
 

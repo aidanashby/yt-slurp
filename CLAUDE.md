@@ -17,5 +17,6 @@
 - Before pushing, run `python -m pytest`. All tests must pass.
 - The pipeline is `yt_slurp.py`, with section headings. The window is `yt_slurp_gui.py` (Tkinter); it talks to the pipeline only through the UI object (`set_ui`, `say`, `UI.choose`, `UI.item` and so on), so keep new prompts and output going through `UI`, never `print` or `input`. Constants are at the top, including `ID_OPEN`/`ID_CLOSE` (the filename delimiter around video IDs) and the Gemini Notebook limits.
 - `yt-slurp.bat` is the installer and launcher. Keep it plain ASCII with CRLF line endings; it cannot be run in the Linux build container, so review changes to it line by line.
+- Filenames are `Title [id] date` (title first, by the user's choice); `parse_transcript_filename` and `migrate_names` in `yt_slurp.py` handle the old date-first names too. The window's colours and drawn widgets (`RoundButton`, `SplitButton`, `Chip`, `SearchBox`) are at the top of `yt_slurp_gui.py`; `icon.png` and `icon.ico` sit next to it.
 - GUI tests need a display: run `xvfb-run -a python -m pytest` (install `python3-tk` if Tkinter is missing).
 - The user runs this on Windows 11 with PowerShell. This build container cannot reach YouTube, so live behaviour can only be checked on their machine.

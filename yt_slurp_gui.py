@@ -1,8 +1,8 @@
-"""yt-slurp window: paste a link, click Slurp, watch transcripts, WAVs or links appear.
+"""yt-slurp window: paste a link, click Slurp, watch results appear.
 
-Started by yt-slurp.bat (or "yt-slurp gui"). The pipeline itself lives in
-yt_slurp.py; this module supplies a UI object for it and runs it on a worker
-thread so the window stays responsive.
+Started by yt-slurp.bat (or "yt-slurp gui"). The pipeline lives in yt_slurp.py;
+this module gives it a UI object and runs it on a worker thread so the window
+stays responsive.
 """
 
 from __future__ import annotations
@@ -26,14 +26,38 @@ REPO_DIR = Path(__file__).resolve().parent
 AUTO_MERGE_EVERY_MS = 5000
 POLL_MS = 100
 
+# Colours, after the Whisper Transcriber app.
+BG = "#ececec"
+CARD = "#ffffff"
+BORDER = "#d4d4d4"
+TEXT = "#2b2b2b"
+MUTED = "#7a7a7a"
+GREEN, GREEN_DARK = "#43a047", "#388e3c"
+SLATE, SLATE_DARK = "#5b6f7a", "#4a5c66"
+BLUE, BLUE_DARK = "#1e88e5", "#1976d2"
+RED, RED_DARK = "#e53935", "#c62828"
+DISABLED = "#b9c3c8"
+MATCH_BG, CURRENT_BG = "#fff59d", "#ffb74d"
+FONT = "Segoe UI"
+
+# Output kinds: label, colour. Chips are shown in alphabetical order of label.
+KINDS = {
+    "link": ("Links", "#546e7a"),
+    "skipped": ("Skipped", "#b26a00"),
+    "transcript": ("Transcripts", "#2e7d32"),
+    "wav": ("WAVs", "#1565c0"),
+}
+
 LANGUAGES = [
     ("en", "English"), ("es", "Spanish"), ("fr", "French"), ("de", "German"), ("it", "Italian"),
     ("pt", "Portuguese"), ("nl", "Dutch"), ("pl", "Polish"), ("ar", "Arabic"), ("he", "Hebrew"),
     ("el", "Greek"), ("ru", "Russian"), ("uk", "Ukrainian"), ("hi", "Hindi"), ("zh", "Chinese"),
     ("ja", "Japanese"), ("ko", "Korean"),
 ]
-SHOW_OPTIONS = [("transcript", "Transcripts"), ("wav", "WAV files"), ("link", "Links")]
-KIND_LABEL = {"transcript": "Transcript", "wav": "WAV", "link": "Link"}
+PACE_LABELS = [("normal", "Normal (2 to 5 seconds between requests)"),
+               ("slow", "Slow (5 to 10 seconds)"),
+               ("very-slow", "Very slow (10 to 20 seconds)")]
+TYPE_LABELS = {"videos": "Normal videos", "shorts": "Shorts", "streams": "Live streams"}
 
 
 # =============================================================================
@@ -51,16 +75,17 @@ DEFAULT_SETTINGS = {
     "min_minutes": 5,
     "lang": "en",
     "timestamps": False,
-    "links_only": False,
+    "make_transcripts": True,
+    "make_wavs": True,
+    "make_links": True,
     "test_run": False,
     "limit": 5,
     "include_non_english": False,
     "chunk_minutes": 60,
-    "batch_files": 10,
+    "pace": "normal",
     "output": str(REPO_DIR / "output"),
     "whisper_path": "",
     "whisper_title": "Whisper",
-    "show": "transcript",
     "chunk_words": ys.DEFAULT_CHUNK_WORDS,
     "max_sources": ys.DEFAULT_MAX_SOURCES,
     "max_source_words": ys.DEFAULT_MAX_SOURCE_WORDS,
@@ -85,28 +110,98 @@ def save_settings(data: dict) -> None:
     os.replace(tmp, folder / "settings.json")
 
 
-def build_argv(settings: dict, url: str = "", list_file: str = "") -> list[str]:
-    """Turn the window's settings into yt-slurp command-line arguments."""
+def build_argv(settings: dict, url: str = "", list_file: str = "", only_type: str | None = None) -> list[str]:
+    """Turn the window's settings into yt-slurp command-line arguments.
+    only_type comes from the Slurp button's menu (just one kind of video)."""
     argv = ["--file", list_file] if list_file else [url]
     argv += ["--output", settings["output"],
              "--min-minutes", str(settings["min_minutes"]),
              "--lang", settings["lang"],
              "--chunk-minutes", str(settings["chunk_minutes"]),
-             "--batch-files", str(settings["batch_files"]),
+             "--pace", settings["pace"],
              "--chunk-words", str(settings["chunk_words"]),
              "--max-sources", str(settings["max_sources"]),
              "--max-source-words", str(settings["max_source_words"])]
-    if not settings["ask_types"] and settings["types"]:
+    if only_type:
+        argv += ["--types", only_type]
+    elif not settings["ask_types"] and settings["types"]:
         argv += ["--types", ",".join(settings["types"])]
+    for key, flag in (("make_transcripts", "--no-transcripts"), ("make_wavs", "--no-wavs"),
+                      ("make_links", "--no-links")):
+        if not settings[key]:
+            argv.append(flag)
     if settings["timestamps"]:
         argv.append("--timestamps")
-    if settings["links_only"]:
-        argv.append("--links-only")
     if settings["test_run"]:
         argv += ["--limit", str(settings["limit"])]
     if settings["include_non_english"]:
         argv.append("--include-non-english")
     return argv
+
+
+# =============================================================================
+# Output items
+# =============================================================================
+
+def display_name(item: dict) -> str:
+    """The exact YouTube title first; anything else goes at the end."""
+    title = item.get("title") or (item["path"].stem if item.get("path") else "")
+    if item["kind"] == "wav" and item.get("path"):
+        part = ys.part_of(item["path"].name)
+        if part:
+            return f"{title}, part {part[0]:02d} of {part[1]:02d}"
+    if item["kind"] == "skipped" and item.get("text"):
+        return f"{title} ({item['text']})"
+    return title
+
+
+def item_key(item: dict) -> tuple:
+    if item["kind"] in ("transcript", "wav"):
+        return (item["kind"], str(item.get("path")))
+    return (item["kind"], item.get("title"), item.get("text") if item["kind"] == "link" else "")
+
+
+def folder_items(folder: Path) -> list[dict]:
+    """Everything an earlier run left in a folder, as output items."""
+    man = folder / "manifest.csv"
+    manifest = ys.Manifest(man) if man.exists() else None
+    run = ys.load_run(folder)
+
+    def title_for(path: Path) -> str:
+        m = ys._ID_RE.search(path.name)
+        row = manifest.get(m.group(1)) if (manifest and m) else None
+        return row["title"] if row else path.stem
+
+    items = []
+    tdir = folder / ys.DIR_TRANSCRIPTS
+    for p in (tdir.glob("*.txt") if tdir.is_dir() else []):
+        items.append({"kind": "transcript", "path": p, "title": title_for(p), "text": ""})
+    ndir = folder / ys.DIR_NEEDS
+    for p in (ndir.rglob("*.wav") if ndir.is_dir() else []):
+        items.append({"kind": "wav", "path": p, "title": title_for(p), "text": ""})
+    if manifest:
+        links_on = (folder / "links.txt").exists()
+        for r in manifest.rows.values():
+            reason = ys.skip_reason(r["status"], run.get("min_minutes", ys.DEFAULT_MIN_MINUTES), r["error"])
+            if reason:
+                items.append({"kind": "skipped", "path": None, "title": r["title"], "text": reason})
+            elif links_on and r["status"] not in ("skipped-short", "skipped-private"):
+                items.append({"kind": "link", "path": folder / "links.txt", "title": r["title"],
+                              "text": ys.watch_url(r["id"])})
+    items.sort(key=lambda it: (display_name(it).lower(), it["kind"]))
+    return items
+
+
+def find_matches(text: str, needle: str) -> list[int]:
+    """Character offsets of every case-insensitive match."""
+    if not needle:
+        return []
+    hay, needle = text.lower(), needle.lower()
+    out, i = [], hay.find(needle)
+    while i >= 0:
+        out.append(i)
+        i = hay.find(needle, i + 1)
+    return out
 
 
 # =============================================================================
@@ -156,7 +251,7 @@ def open_path(path: Path) -> None:
         messagebox.showinfo(APP_NAME, f"{path} does not exist yet.")
         return
     if os.name == "nt":
-        os.startfile(str(path))  # noqa: S606 (opens with the usual program)
+        os.startfile(str(path))  # opens with the usual program
     else:
         subprocess.Popen(["xdg-open", str(path)])
 
@@ -206,11 +301,195 @@ def wav_info(path: Path) -> str:
     except (OSError, wave.Error, ZeroDivisionError):
         return f"{path.name}\n\n(could not read the WAV header)"
     size_mb = path.stat().st_size / 1_000_000
-    batch = path.parent.name if path.parent.name.startswith("batch") else "no batch folder"
     return (f"{path.name}\n\nLength: {ys.fmt_duration(secs)}\nFormat: {rate} Hz, "
-            f"{'mono' if ch == 1 else f'{ch} channels'}, 16-bit\nSize: {size_mb:.1f} MB\n"
-            f"Folder: {batch}\n\nDrag it into the Whisper app, then save the text into "
-            f"{ys.DIR_WHISPER}.")
+            f"{'mono' if ch == 1 else f'{ch} channels'}, 16-bit\nSize: {size_mb:.1f} MB\n\n"
+            f"Drag it into the Whisper app, then save the text into {ys.DIR_WHISPER}. "
+            "yt-slurp merges it by itself.")
+
+
+# =============================================================================
+# Drawn widgets
+# =============================================================================
+
+def rounded_rect(canvas, x1, y1, x2, y2, r, **kw):
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2, x2 - r, y2,
+           x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return canvas.create_polygon(pts, smooth=True, **kw)
+
+
+class RoundButton(tk.Canvas):
+    """A soft-cornered flat button, like the Whisper app's."""
+
+    def __init__(self, parent, text, command, colour=SLATE, hover=SLATE_DARK, fg="white",
+                 width=None, height=34, font=(FONT, 10), bg=BG):
+        self.font = font
+        tmp = tk.Label(parent, text=text, font=font)
+        w = width or tmp.winfo_reqwidth() + 28
+        tmp.destroy()
+        super().__init__(parent, width=w, height=height, bg=bg, highlightthickness=0, cursor="hand2")
+        self.text, self.command = text, command
+        self.colour, self.hover_colour, self.fg = colour, hover, fg
+        self.enabled = True
+        self.w, self.h = w, height
+        self.draw(colour)
+        self.bind("<Enter>", lambda e: self.enabled and self.draw(self.hover_colour))
+        self.bind("<Leave>", lambda e: self.draw(self.colour if self.enabled else DISABLED))
+        self.bind("<Button-1>", self.click)
+
+    def draw(self, fill):
+        self.delete("all")
+        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 9, fill=fill, outline=fill)
+        self.create_text(self.w / 2, self.h / 2, text=self.text, fill=self.fg, font=self.font)
+
+    def click(self, _=None):
+        if self.enabled and self.command:
+            self.command()
+
+    def set_text(self, text):
+        self.text = text
+        self.draw(self.colour if self.enabled else DISABLED)
+
+    def set_enabled(self, on: bool):
+        self.enabled = on
+        self.configure(cursor="hand2" if on else "arrow")
+        self.draw(self.colour if on else DISABLED)
+
+
+class SplitButton(tk.Canvas):
+    """Slurp: the main area runs with the types in settings; the arrow opens a menu."""
+
+    def __init__(self, parent, text, command, menu_command, width=150, height=38):
+        super().__init__(parent, width=width, height=height, bg=CARD, highlightthickness=0, cursor="hand2")
+        self.text, self.command, self.menu_command = text, command, menu_command
+        self.w, self.h, self.arrow_w = width, height, 34
+        self.enabled = True
+        self.hover = None
+        self.draw()
+        self.bind("<Motion>", self.motion)
+        self.bind("<Leave>", lambda e: self.set_hover(None))
+        self.bind("<Button-1>", self.click)
+
+    def zone(self, x):
+        return "arrow" if x > self.w - self.arrow_w else "main"
+
+    def motion(self, e):
+        self.set_hover(self.zone(e.x))
+
+    def set_hover(self, z):
+        if z != self.hover:
+            self.hover = z
+            self.draw()
+
+    def draw(self):
+        self.delete("all")
+        base = GREEN if self.enabled else DISABLED
+        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 10, fill=base, outline=base)
+        if self.enabled and self.hover:
+            x1, x2 = (1, self.w - self.arrow_w) if self.hover == "main" else (self.w - self.arrow_w, self.w - 1)
+            self.create_rectangle(x1 + (8 if self.hover == "main" else 0), 2,
+                                  x2 - (8 if self.hover == "arrow" else 0), self.h - 2,
+                                  fill=GREEN_DARK, outline=GREEN_DARK)
+            if self.hover == "main":
+                rounded_rect(self, 1, 1, 30, self.h - 1, 10, fill=GREEN_DARK, outline=GREEN_DARK)
+            else:
+                rounded_rect(self, self.w - 30, 1, self.w - 1, self.h - 1, 10, fill=GREEN_DARK, outline=GREEN_DARK)
+        self.create_line(self.w - self.arrow_w, 8, self.w - self.arrow_w, self.h - 8, fill="#ffffff", width=1)
+        self.create_text((self.w - self.arrow_w) / 2, self.h / 2, text=self.text, fill="white",
+                         font=(FONT, 11, "bold"))
+        cx, cy = self.w - self.arrow_w / 2, self.h / 2
+        self.create_polygon(cx - 5, cy - 2, cx + 5, cy - 2, cx, cy + 4, fill="white", outline="white")
+
+    def click(self, e):
+        if not self.enabled:
+            return
+        if self.zone(e.x) == "arrow":
+            self.menu_command(self.winfo_rootx() + self.w - self.arrow_w, self.winfo_rooty() + self.h)
+        else:
+            self.command()
+
+    def set_enabled(self, on: bool):
+        self.enabled = on
+        self.configure(cursor="hand2" if on else "arrow")
+        self.draw()
+
+
+class Chip(tk.Canvas):
+    """A filter chip: coloured dot, label and count. Click to toggle."""
+
+    def __init__(self, parent, kind, on_toggle):
+        self.kind = kind
+        self.label, self.colour = KINDS[kind]
+        self.on = True
+        self.count = 0
+        self.on_toggle = on_toggle
+        super().__init__(parent, height=28, width=10, bg=CARD, highlightthickness=0, cursor="hand2")
+        self.bind("<Button-1>", self.toggle)
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        text = f"{self.label}  {self.count}"
+        tmp = tk.Label(self, text=text, font=(FONT, 9))
+        w = tmp.winfo_reqwidth() + 36
+        tmp.destroy()
+        self.configure(width=w)
+        fill = self.colour if self.on else CARD
+        outline = self.colour if self.on else BORDER
+        rounded_rect(self, 1, 2, w - 1, 26, 12, fill=fill, outline=outline)
+        dot = "white" if self.on else self.colour
+        self.create_oval(11, 10, 19, 18, fill=dot, outline=dot)
+        self.create_text(25, 14, text=text, anchor="w", fill="white" if self.on else MUTED, font=(FONT, 9))
+
+    def toggle(self, _=None):
+        self.on = not self.on
+        self.draw()
+        self.on_toggle()
+
+    def set_count(self, n):
+        if n != self.count:
+            self.count = n
+            self.draw()
+
+
+class SearchBox(tk.Frame):
+    """A flat entry with a placeholder and an optional × to clear it."""
+
+    def __init__(self, parent, placeholder, on_change, clear_button=True, width=30):
+        super().__init__(parent, bg=CARD, highlightthickness=1, highlightbackground=BORDER,
+                         highlightcolor=BLUE)
+        self.placeholder, self.on_change = placeholder, on_change
+        self.var = tk.StringVar()
+        self.entry = tk.Entry(self, textvariable=self.var, relief="flat", bd=4, bg=CARD, fg=TEXT,
+                              font=(FONT, 10), width=width, insertbackground=TEXT)
+        self.entry.pack(side="left", fill="x", expand=True)
+        self.hint = tk.Label(self, text=placeholder, bg=CARD, fg=MUTED, font=(FONT, 10))
+        self.hint.place(x=6, rely=0.5, anchor="w")
+        self.hint.bind("<Button-1>", lambda e: self.entry.focus_set())
+        self.clear = None
+        if clear_button:
+            self.clear = tk.Label(self, text="×", bg=CARD, fg=MUTED, font=(FONT, 12), cursor="hand2")
+            self.clear.bind("<Button-1>", lambda e: self.var.set(""))
+        self.var.trace_add("write", lambda *a: self.changed())
+
+    def changed(self):
+        has = bool(self.var.get())
+        if has:
+            self.hint.place_forget()
+        else:
+            self.hint.place(x=6, rely=0.5, anchor="w")
+        if self.clear is not None:
+            if has:
+                self.clear.pack(side="right", padx=(0, 6))
+            else:
+                self.clear.pack_forget()
+        self.on_change()
+
+    def get(self):
+        return self.var.get()
+
+
+def card(parent, **kw) -> tk.Frame:
+    return tk.Frame(parent, bg=CARD, highlightthickness=1, highlightbackground=BORDER, **kw)
 
 
 # =============================================================================
@@ -241,8 +520,8 @@ class GuiUI:
     def counts(self, folder, counts) -> None:
         self._post("counts", Path(folder), dict(counts))
 
-    def item(self, kind, folder, path=None, text="") -> None:
-        self._post("item", kind, Path(folder), Path(path) if path else None, text)
+    def item(self, kind, folder, path=None, text="", title="") -> None:
+        self._post("item", kind, Path(folder), Path(path) if path else None, text, title)
 
     def choose(self, question, options):
         return self._ask("choose", question, options)
@@ -266,39 +545,90 @@ class App:
         self.events: queue.Queue = queue.Queue()
         self.worker: threading.Thread | None = None
         self.items: list[dict] = []
+        self.keys: set = set()
+        self.shown: list[int] = []
         self.current_folder: Path | None = None
         self.list_file = ""
         self.smoke_waiting = False
+        self.log_lines: list[str] = []
+        self.log_window = None
+        self.stage = "Ready."
+        self.counts_text = ""
+        self.matches: list[int] = []
+        self.match_i = -1
         ys.set_ui(GuiUI(self))
 
         root.title("yt-slurp")
-        root.geometry("1250x820")
-        root.minsize(980, 640)
-        style = ttk.Style()
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-        style.configure("Big.TButton", font=("Segoe UI", 11, "bold"), padding=(18, 6))
-        style.configure("Head.TLabel", font=("Segoe UI", 10, "bold"))
-
+        root.geometry("1220x800")
+        root.minsize(940, 600)
+        root.configure(bg=BG)
+        self.set_icon()
+        self.style()
         self.build_menu()
+        self.build_header()
         self.build_top()
-        self.build_middle()
         self.build_bottom()
+        self.build_middle()
         self.refresh_sources()
+        self.update_status()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(POLL_MS, self.poll)
         root.after(AUTO_MERGE_EVERY_MS, self.auto_merge)
         if not self.settings["welcomed"]:
             root.after(300, self.welcome)
 
+    # ----- look -----
+
+    def set_icon(self):
+        self.icon_img = None
+        try:
+            self.icon_img = tk.PhotoImage(file=str(REPO_DIR / "icon.png"))
+            self.root.iconphoto(True, self.icon_img)
+            if os.name == "nt":
+                self.root.iconbitmap(default=str(REPO_DIR / "icon.ico"))
+        except tk.TclError:
+            pass
+
+    def style(self):
+        s = ttk.Style()
+        s.theme_use("clam")
+        s.configure(".", font=(FONT, 10), background=BG, foreground=TEXT)
+        s.configure("Out.Treeview", background=CARD, fieldbackground=CARD, foreground=TEXT,
+                    rowheight=26, borderwidth=0, font=(FONT, 10))
+        s.layout("Out.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+        s.map("Out.Treeview", background=[("selected", "#e3f2fd")], foreground=[("selected", TEXT)])
+        s.layout("Slim.Vertical.TScrollbar", [
+            ("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+                ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+        s.configure("Slim.Vertical.TScrollbar", troughcolor=CARD, background="#c8c8c8", bordercolor=CARD,
+                    lightcolor="#c8c8c8", darkcolor="#c8c8c8", arrowsize=7, width=7, gripcount=0)
+        s.map("Slim.Vertical.TScrollbar", background=[("active", "#a8a8a8")])
+        s.configure("TCombobox", fieldbackground=CARD, background=CARD, arrowcolor=SLATE, bordercolor=BORDER,
+                    lightcolor=CARD, darkcolor=CARD, padding=4)
+        s.map("TCombobox", fieldbackground=[("readonly", CARD)], selectbackground=[("readonly", CARD)],
+              selectforeground=[("readonly", TEXT)])
+        for w in ("TCheckbutton", "TRadiobutton"):
+            s.configure(w, background=CARD, foreground=TEXT, font=(FONT, 10), indicatorbackground=CARD,
+                        indicatorforeground=GREEN_DARK, upperbordercolor=BORDER, lowerbordercolor=BORDER)
+            s.map(w, background=[("active", CARD)], indicatorbackground=[("disabled", "#f0f0f0")],
+                  foreground=[("disabled", MUTED)])
+        s.configure("TSpinbox", fieldbackground=CARD, background=CARD, arrowcolor=SLATE, bordercolor=BORDER,
+                    lightcolor=CARD, darkcolor=CARD)
+        s.configure("TEntry", fieldbackground=CARD, bordercolor=BORDER, lightcolor=CARD, darkcolor=CARD)
+        s.configure("Horizontal.TProgressbar", troughcolor="#dcdcdc", background=GREEN, bordercolor=BG,
+                    lightcolor=GREEN, darkcolor=GREEN, thickness=6)
+
     # ----- layout -----
 
     def build_menu(self):
         bar = tk.Menu(self.root)
         tools = tk.Menu(bar, tearoff=False)
+        tools.add_command(label="Settings...", command=self.open_settings)
+        tools.add_separator()
         tools.add_command(label="Check the Whisper app keeps filenames", command=self.smoke_test)
-        tools.add_command(label="Merge Whisper text now", command=self.merge_now)
+        tools.add_command(label="Rebuild Claude and Gemini files", command=self.rebuild_combined)
         tools.add_command(label="Open the manifest in Excel", command=self.open_manifest)
+        tools.add_command(label="Show the full log", command=self.show_log)
         tools.add_separator()
         tools.add_command(label="Run the self-test", command=self.self_test)
         bar.add_cascade(label="Tools", menu=tools)
@@ -307,267 +637,157 @@ class App:
         bar.add_cascade(label="Help", menu=helpm)
         self.root.config(menu=bar)
 
-    def build_top(self):
-        top = ttk.Frame(self.root, padding=(10, 10, 10, 4))
-        top.pack(fill="x")
-        ttk.Label(top, text="Channel or playlist link:", style="Head.TLabel").grid(row=0, column=0, sticky="w")
-        self.url_var = tk.StringVar()
-        self.url_entry = ttk.Entry(top, textvariable=self.url_var, font=("Segoe UI", 11))
-        self.url_entry.grid(row=0, column=1, sticky="ew", padx=6)
-        self.url_entry.bind("<Return>", lambda e: self.slurp())
-        self.slurp_btn = ttk.Button(top, text="Slurp", style="Big.TButton", command=self.slurp)
-        self.slurp_btn.grid(row=0, column=2, padx=(6, 0))
-        self.stop_btn = ttk.Button(top, text="Stop", command=self.stop, state="disabled")
-        self.stop_btn.grid(row=0, column=3, padx=(6, 0))
+    def build_header(self):
+        head = tk.Frame(self.root, bg=BG)
+        head.pack(fill="x", padx=14, pady=(10, 0))
+        if self.icon_img is not None:
+            self.head_icon = self.icon_img.subsample(8, 8)
+            tk.Label(head, image=self.head_icon, bg=BG).pack(side="left")
+        tk.Label(head, text="yt-slurp", bg=BG, fg=TEXT, font=(FONT, 14, "bold")).pack(side="left", padx=(6, 0))
+        gear = tk.Label(head, text="⚙  Settings", bg=BG, fg=TEXT, font=(FONT, 11), cursor="hand2")
+        gear.pack(side="right")
+        gear.bind("<Button-1>", lambda e: self.open_settings())
 
-        ttk.Button(top, text="Use a list of links from a file...", command=self.pick_list).grid(
-            row=1, column=1, sticky="w", padx=6, pady=(6, 0))
-        self.list_label = ttk.Label(top, text="", foreground="#555")
-        self.list_label.grid(row=1, column=1, sticky="e", padx=6, pady=(6, 0))
-        ttk.Label(top, text="Or pick one you've done before:").grid(row=2, column=0, sticky="w", pady=(6, 0))
+    def build_top(self):
+        top = card(self.root)
+        top.pack(fill="x", padx=12, pady=(8, 6))
+        inner = tk.Frame(top, bg=CARD)
+        inner.pack(fill="x", padx=12, pady=10)
+        self.url_box = SearchBox(inner, "Paste a YouTube channel or playlist link", lambda: None,
+                                 clear_button=True, width=60)
+        self.url_box.entry.configure(font=(FONT, 11))
+        self.url_box.pack(side="left", fill="x", expand=True, ipady=3)
+        self.url_var = self.url_box.var
+        self.url_box.entry.bind("<Return>", lambda e: self.slurp())
+        self.slurp_btn = SplitButton(inner, "Slurp", self.slurp, self.slurp_menu)
+        self.slurp_btn.pack(side="left", padx=(10, 0))
+        self.pause_btn = RoundButton(inner, "Pause", self.toggle_pause, colour=SLATE, hover=SLATE_DARK,
+                                     width=92, height=38, bg=CARD)
+        self.pause_btn.pack(side="left", padx=(8, 0))
+        self.stop_btn = RoundButton(inner, "Stop", self.stop, colour=RED, hover=RED_DARK, width=80, height=38,
+                                    bg=CARD)
+        self.stop_btn.pack(side="left", padx=(8, 0))
+        self.pause_btn.set_enabled(False)
+        self.stop_btn.set_enabled(False)
+
+        row = tk.Frame(top, bg=CARD)
+        row.pack(fill="x", padx=12, pady=(0, 10))
+        link = tk.Label(row, text="Use a list of links from a file", bg=CARD, fg=BLUE, font=(FONT, 9, "underline"),
+                        cursor="hand2")
+        link.pack(side="left")
+        link.bind("<Button-1>", lambda e: self.pick_list())
+        self.list_label = tk.Label(row, text="", bg=CARD, fg=MUTED, font=(FONT, 9))
+        self.list_label.pack(side="left", padx=8)
         self.source_var = tk.StringVar()
-        self.source_box = ttk.Combobox(top, textvariable=self.source_var, state="readonly")
-        self.source_box.grid(row=2, column=1, sticky="ew", padx=6, pady=(6, 0))
+        self.source_box = ttk.Combobox(row, textvariable=self.source_var, state="readonly", width=40)
+        self.source_box.pack(side="right")
         self.source_box.bind("<<ComboboxSelected>>", self.pick_source)
-        top.columnconfigure(1, weight=1)
+        tk.Label(row, text="Done before:", bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="right", padx=6)
+
+        self.type_menu = tk.Menu(self.root, tearoff=False)
+        for key in ys.TYPES:
+            self.type_menu.add_command(label=f"Just {TYPE_LABELS[key].lower()}" if key != "shorts" else "Just Shorts",
+                                       command=lambda k=key: self.slurp(only_type=k))
 
     def build_middle(self):
-        panes = ttk.PanedWindow(self.root, orient="horizontal")
-        panes.pack(fill="both", expand=True, padx=10, pady=4)
-        panes.add(self.build_settings(panes), weight=0)
+        mid = tk.Frame(self.root, bg=BG)
+        mid.pack(fill="both", expand=True, padx=12, pady=0)
+        panes = tk.PanedWindow(mid, orient="horizontal", bg=BG, sashwidth=10, bd=0, sashrelief="flat")
+        panes.pack(fill="both", expand=True)
 
-        out = ttk.Frame(panes)
-        panes.add(out, weight=1)
-        head = ttk.Frame(out)
-        head.pack(fill="x")
-        ttk.Label(head, text="Show:", style="Head.TLabel").pack(side="left")
-        self.show_var = tk.StringVar(value=self.settings["show"])
-        for key, label in SHOW_OPTIONS:
-            ttk.Radiobutton(head, text=label, value=key, variable=self.show_var,
-                            command=self.change_show).pack(side="left", padx=6)
-        self.count_label = ttk.Label(head, text="", foreground="#333")
-        self.count_label.pack(side="right")
-
-        split = ttk.PanedWindow(out, orient="horizontal")
-        split.pack(fill="both", expand=True, pady=(4, 0))
-        listf = ttk.Frame(split)
-        self.tree = ttk.Treeview(listf, columns=("time", "name"), show="headings", selectmode="browse")
-        self.tree.heading("time", text="Time")
-        self.tree.heading("name", text="Name")
-        self.tree.column("time", width=70, stretch=False)
-        self.tree.column("name", width=420)
-        sb = ttk.Scrollbar(listf, orient="vertical", command=self.tree.yview)
+        left = card(panes)
+        chips = tk.Frame(left, bg=CARD)
+        chips.pack(fill="x", padx=10, pady=(10, 6))
+        self.chips = {}
+        for kind in sorted(KINDS, key=lambda k: KINDS[k][0]):
+            chip = Chip(chips, kind, self.redraw)
+            chip.pack(side="left", padx=(0, 6))
+            self.chips[kind] = chip
+        self.name_filter = SearchBox(left, "Filter by name", self.redraw)
+        self.name_filter.pack(fill="x", padx=10, pady=(0, 6))
+        listf = tk.Frame(left, bg=CARD)
+        listf.pack(fill="both", expand=True, padx=(10, 4), pady=(0, 10))
+        self.tree = ttk.Treeview(listf, show="tree", selectmode="browse", style="Out.Treeview")
+        for kind, (_, colour) in KINDS.items():
+            self.tree.tag_configure(kind, foreground=colour)
+        sb = ttk.Scrollbar(listf, orient="vertical", command=self.tree.yview, style="Slim.Vertical.TScrollbar")
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self.tree.bind("<<TreeviewSelect>>", self.preview)
         self.tree.bind("<Double-1>", self.open_selected)
-        split.add(listf, weight=1)
+        panes.add(left, minsize=320, width=520)
 
-        prevf = ttk.Frame(split)
-        self.preview_text = tk.Text(prevf, wrap="word", font=("Segoe UI", 10), padx=8, pady=6,
-                                    state="disabled", relief="flat", background="#fbfbfb")
-        psb = ttk.Scrollbar(prevf, orient="vertical", command=self.preview_text.yview)
+        right = card(panes)
+        srow = tk.Frame(right, bg=CARD)
+        srow.pack(fill="x", padx=10, pady=(10, 6))
+        self.text_search = SearchBox(srow, "Search in this file", self.run_search, clear_button=True)
+        self.text_search.pack(side="left", fill="x", expand=True)
+        self.text_search.entry.bind("<Return>", lambda e: self.step_match(1))
+        self.text_search.entry.bind("<Shift-Return>", lambda e: self.step_match(-1))
+        for sym, step in (("‹", -1), ("›", 1)):
+            b = tk.Label(srow, text=sym, bg=CARD, fg=SLATE, font=(FONT, 16), cursor="hand2", padx=6)
+            b.pack(side="left")
+            b.bind("<Button-1>", lambda e, s=step: self.step_match(s))
+        self.match_label = tk.Label(srow, text="", bg=CARD, fg=MUTED, font=(FONT, 9), width=10)
+        self.match_label.pack(side="left")
+        textf = tk.Frame(right, bg=CARD)
+        textf.pack(fill="both", expand=True, padx=(10, 4), pady=(0, 10))
+        self.preview_text = tk.Text(textf, wrap="word", font=(FONT, 10), padx=10, pady=8, state="disabled",
+                                    relief="flat", bg=CARD, fg=TEXT, highlightthickness=0,
+                                    selectbackground="#bbdefb")
+        self.preview_text.tag_configure("match", background=MATCH_BG)
+        self.preview_text.tag_configure("current", background=CURRENT_BG)
+        self.preview_text.tag_raise("current")
+        psb = ttk.Scrollbar(textf, orient="vertical", command=self.preview_text.yview,
+                            style="Slim.Vertical.TScrollbar")
         self.preview_text.configure(yscrollcommand=psb.set)
         self.preview_text.pack(side="left", fill="both", expand=True)
         psb.pack(side="right", fill="y")
-        split.add(prevf, weight=1)
-
-    def build_settings(self, parent):
-        outer = ttk.Frame(parent, width=370)
-        canvas = tk.Canvas(outer, width=360, highlightthickness=0)
-        sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        frame = ttk.Frame(canvas, padding=(0, 0, 8, 0))
-        frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=frame, anchor="nw")
-        canvas.configure(yscrollcommand=sb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
-                        if str(e.widget).startswith(str(canvas)) else None)
-
-        s = self.settings
-        self.vars: dict[str, tk.Variable] = {}
-
-        def section(text):
-            ttk.Label(frame, text=text, style="Head.TLabel").pack(anchor="w", pady=(10, 2))
-
-        def check(key, text, command=None):
-            v = tk.BooleanVar(value=s[key])
-            self.vars[key] = v
-            ttk.Checkbutton(frame, text=text, variable=v, command=command or self.store).pack(anchor="w")
-            return v
-
-        def number(key, before, after, lo, hi):
-            row = ttk.Frame(frame)
-            row.pack(anchor="w", pady=1)
-            ttk.Label(row, text=before).pack(side="left")
-            v = tk.StringVar(value=str(s[key]))
-            self.vars[key] = v
-            sp = ttk.Spinbox(row, from_=lo, to=hi, width=7, textvariable=v, command=self.store)
-            sp.pack(side="left", padx=4)
-            sp.bind("<FocusOut>", lambda e: self.store())
-            ttk.Label(row, text=after).pack(side="left")
-
-        section("Which videos")
-        check("ask_types", "Ask me each time", command=self.toggle_types)
-        self.type_checks = []
-        chosen = set(s["types"])
-        self.type_vars = {}
-        for key, label in (("videos", "Normal videos"), ("shorts", "Shorts"), ("streams", "Live streams")):
-            v = tk.BooleanVar(value=key in chosen)
-            self.type_vars[key] = v
-            cb = ttk.Checkbutton(frame, text=label, variable=v, command=self.store)
-            cb.pack(anchor="w", padx=(20, 0))
-            self.type_checks.append(cb)
-        number("min_minutes", "Skip videos shorter than", "minutes", 0, 600)
-        check("test_run", "Test run: only do the first few videos")
-        number("limit", "How many in a test run:", "", 1, 1000)
-
-        section("Transcripts")
-        row = ttk.Frame(frame)
-        row.pack(anchor="w", pady=1)
-        ttk.Label(row, text="Caption language:").pack(side="left")
-        self.lang_var = tk.StringVar(value=dict(LANGUAGES).get(s["lang"], s["lang"]))
-        lb = ttk.Combobox(row, textvariable=self.lang_var, width=14, values=[n for _, n in LANGUAGES])
-        lb.pack(side="left", padx=4)
-        lb.bind("<<ComboboxSelected>>", lambda e: self.store())
-        lb.bind("<FocusOut>", lambda e: self.store())
-        check("timestamps", "Add the time at the start of each paragraph")
-        check("links_only", "Only make the list of links")
-
-        section("Videos without captions")
-        check("include_non_english", "Make WAVs for videos not in English")
-        number("chunk_minutes", "Split long audio into parts of", "minutes", 0, 600)
-        number("batch_files", "Put", "WAV files in each batch folder", 0, 500)
-
-        section("Where things go")
-        self.output_var = tk.StringVar(value=s["output"])
-        ttk.Label(frame, textvariable=self.output_var, wraplength=330, foreground="#333").pack(anchor="w")
-        ttk.Button(frame, text="Change results folder...", command=self.pick_output).pack(anchor="w", pady=2)
-
-        section("Whisper app")
-        self.whisper_var = tk.StringVar(value=s["whisper_path"] or "Not set yet")
-        ttk.Label(frame, textvariable=self.whisper_var, wraplength=330, foreground="#333").pack(anchor="w")
-        ttk.Button(frame, text="Choose the Whisper app...", command=self.pick_whisper).pack(anchor="w", pady=2)
-        row = ttk.Frame(frame)
-        row.pack(anchor="w", pady=1)
-        ttk.Label(row, text="Its window title contains:").pack(side="left")
-        v = tk.StringVar(value=s["whisper_title"])
-        self.vars["whisper_title"] = v
-        e = ttk.Entry(row, textvariable=v, width=14)
-        e.pack(side="left", padx=4)
-        e.bind("<FocusOut>", lambda ev: self.store())
-
-        self.adv_shown = tk.BooleanVar(value=False)
-        ttk.Checkbutton(frame, text="Show advanced settings", variable=self.adv_shown,
-                        command=self.toggle_advanced).pack(anchor="w", pady=(12, 0))
-        self.adv = ttk.Frame(frame)
-        for key, before, after, hi in (("chunk_words", "Words per Claude file:", "", 2_000_000),
-                                       ("max_sources", "Gemini Notebook sources:", "", 1000),
-                                       ("max_source_words", "Words per Gemini source:", "", 500_000)):
-            r = ttk.Frame(self.adv)
-            r.pack(anchor="w", pady=1)
-            ttk.Label(r, text=before).pack(side="left")
-            vv = tk.StringVar(value=str(s[key]))
-            self.vars[key] = vv
-            sp = ttk.Spinbox(r, from_=1, to=hi, width=9, textvariable=vv, command=self.store)
-            sp.pack(side="left", padx=4)
-            sp.bind("<FocusOut>", lambda ev: self.store())
-        self.toggle_types(save=False)
-        return outer
+        self.empty_hint = tk.Label(right, text="Select a file from the list to see it here.", bg=CARD, fg=MUTED,
+                                   font=(FONT, 10))
+        self.empty_hint.place(relx=0.5, rely=0.5, anchor="center")
+        panes.add(right, minsize=320)
 
     def build_bottom(self):
-        bottom = ttk.Frame(self.root, padding=(10, 4, 10, 10))
-        bottom.pack(fill="x")
-        prog = ttk.Frame(bottom)
-        prog.pack(fill="x")
-        self.stage_label = ttk.Label(prog, text="Ready.")
-        self.stage_label.pack(side="left")
-        self.bar = ttk.Progressbar(prog, mode="determinate", length=320)
+        status = tk.Frame(self.root, bg=BG)
+        status.pack(side="bottom", fill="x", padx=14, pady=(0, 8))
+        self.status_label = tk.Label(status, text="", bg=BG, fg=MUTED, font=(FONT, 9), anchor="w", cursor="hand2")
+        self.status_label.pack(side="left", fill="x", expand=True)
+        self.status_label.bind("<Button-1>", lambda e: self.show_log())
+        self.bar = ttk.Progressbar(status, mode="determinate", length=220)
         self.bar.pack(side="right")
 
-        logf = ttk.Frame(bottom)
-        logf.pack(fill="x", pady=4)
-        self.log = tk.Text(logf, height=7, wrap="word", font=("Consolas", 9), state="disabled",
-                           relief="flat", background="#f3f3f3")
-        lsb = ttk.Scrollbar(logf, orient="vertical", command=self.log.yview)
-        self.log.configure(yscrollcommand=lsb.set)
-        self.log.pack(side="left", fill="x", expand=True)
-        lsb.pack(side="right", fill="y")
+        btns = tk.Frame(self.root, bg=BG)
+        btns.pack(side="bottom", fill="x", padx=12, pady=(8, 6))
+        for text, cmd, colour, hover in (
+                ("Open results folder", self.open_results, SLATE, SLATE_DARK),
+                ("Open WAV folder", self.open_wavs, SLATE, SLATE_DARK),
+                ("Launch Whisper app", self.launch_whisper, BLUE, BLUE_DARK),
+                ("Open Claude files", lambda: self.open_sub(ys.DIR_CLAUDE), SLATE, SLATE_DARK),
+                ("Open Gemini files", lambda: self.open_sub(ys.DIR_GEMINI), SLATE, SLATE_DARK)):
+            RoundButton(btns, text, cmd, colour=colour, hover=hover).pack(side="left", padx=(0, 8))
 
-        btns = ttk.Frame(bottom)
-        btns.pack(fill="x")
-        for text, cmd in (("Open results folder", self.open_results),
-                          ("Open WAV folder", self.open_wavs),
-                          ("Launch Whisper app", self.launch_whisper),
-                          ("Open Claude files", lambda: self.open_sub(ys.DIR_CLAUDE)),
-                          ("Open Gemini files", lambda: self.open_sub(ys.DIR_GEMINI))):
-            ttk.Button(btns, text=text, command=cmd).pack(side="left", padx=(0, 6))
+    # ----- status bar and log -----
 
-    # ----- settings -----
+    def update_status(self):
+        parts = [self.stage]
+        if self.counts_text:
+            parts.append(self.counts_text)
+        self.status_label.configure(text="   ·   ".join(parts) + "      Show log ›")
 
-    def store(self):
-        s = self.settings
-        for key, var in self.vars.items():
-            val = var.get()
-            if key in ("min_minutes", "chunk_minutes"):
-                try:
-                    val = float(val)
-                    val = int(val) if val == int(val) else val
-                except ValueError:
-                    val = DEFAULT_SETTINGS[key]
-            elif key in ("limit", "batch_files", "chunk_words", "max_sources", "max_source_words"):
-                try:
-                    val = max(0, int(float(val)))
-                except ValueError:
-                    val = DEFAULT_SETTINGS[key]
-            s[key] = val
-        s["types"] = [k for k, v in self.type_vars.items() if v.get()]
-        name = self.lang_var.get().strip()
-        s["lang"] = next((c for c, n in LANGUAGES if n.lower() == name.lower()), name.lower() or "en")
-        save_settings(s)
+    def write_log(self, msg):
+        self.log_lines.append(msg)
+        if self.log_window is not None:
+            self.log_window.append(msg)
 
-    def toggle_types(self, save=True):
-        state = "disabled" if self.vars["ask_types"].get() else "normal"
-        for cb in self.type_checks:
-            cb.configure(state=state)
-        if save:
-            self.store()
+    def show_log(self):
+        if self.log_window is not None:
+            self.log_window.top.lift()
+            return
+        self.log_window = LogWindow(self)
 
-    def toggle_advanced(self):
-        if self.adv_shown.get():
-            self.adv.pack(anchor="w", padx=(20, 0))
-        else:
-            self.adv.pack_forget()
-
-    def pick_output(self):
-        d = filedialog.askdirectory(title="Where should yt-slurp save results?",
-                                    initialdir=self.settings["output"])
-        if d:
-            self.settings["output"] = d
-            self.output_var.set(d)
-            self.store()
-            self.refresh_sources()
-
-    def pick_whisper(self):
-        f = filedialog.askopenfilename(
-            title="Choose the Whisper app (its .exe, .bat, .py or shortcut)",
-            filetypes=[("Programs and scripts", "*.exe *.bat *.cmd *.py *.pyw *.lnk"), ("All files", "*.*")])
-        if f:
-            self.settings["whisper_path"] = f
-            self.whisper_var.set(f)
-            self.store()
-
-    def pick_list(self):
-        f = filedialog.askopenfilename(title="Choose a text file with one link per line",
-                                       filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
-        if f:
-            self.list_file = f
-            self.url_var.set("")
-            self.list_label.configure(text=f"Using links from {Path(f).name}  (type a link to use that instead)")
-
-    # ----- previous sources -----
+    # ----- sources -----
 
     def sources(self) -> list[tuple[str, Path, dict]]:
         out = Path(self.settings["output"])
@@ -594,57 +814,78 @@ class App:
             self.list_label.configure(text="")
         self.show_folder(folder)
 
+    def pick_list(self):
+        f = filedialog.askopenfilename(title="Choose a text file with one link per line",
+                                       filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
+        if f:
+            self.list_file = f
+            self.url_var.set("")
+            self.list_label.configure(text=f"Using links from {Path(f).name} (paste a link to use that instead)")
+
+    # ----- output list -----
+
     def show_folder(self, folder: Path):
-        """List what already exists in a folder."""
         self.current_folder = folder
-        self.items = []
-        for p in sorted((folder / ys.DIR_TRANSCRIPTS).glob("*.txt")) if (folder / ys.DIR_TRANSCRIPTS).is_dir() else []:
-            self.items.append({"kind": "transcript", "path": p, "text": "", "time": ""})
-        needs = folder / ys.DIR_NEEDS
-        if needs.is_dir():
-            for p in sorted(needs.rglob("*.wav")):
-                self.items.append({"kind": "wav", "path": p, "text": "", "time": ""})
-        links = folder / "links.txt"
-        if links.exists():
-            for line in ys.read_text(links).splitlines():
-                self.items.append({"kind": "link", "path": links, "text": line, "time": ""})
+        self.items, self.keys = [], set()
+        for it in folder_items(folder):
+            self.keys.add(item_key(it))
+            self.items.append(it)
         self.redraw()
         man = folder / "manifest.csv"
         if man.exists():
             self.show_counts(ys.Manifest(man).counts())
 
-    # ----- output panel -----
-
-    def change_show(self):
-        self.settings["show"] = self.show_var.get()
-        save_settings(self.settings)
+    def clear_items(self):
+        self.items, self.keys, self.current_folder = [], set(), None
         self.redraw()
 
+    def visible(self, it) -> bool:
+        if not self.chips[it["kind"]].on:
+            return False
+        needle = self.name_filter.get().strip().lower()
+        return not needle or needle in display_name(it).lower()
+
     def redraw(self):
+        sel = self.selected()
         self.tree.delete(*self.tree.get_children())
         for i, it in enumerate(self.items):
-            if it["kind"] == self.show_var.get():
-                self.insert_row(i, it)
-        self.set_preview("")
+            if self.visible(it):
+                self.tree.insert("", "end", iid=str(i), text=f"●  {display_name(it)}", tags=(it["kind"],))
+        self.update_chip_counts()
+        if sel is not None and str(self.items.index(sel)) in self.tree.get_children():
+            self.tree.selection_set(str(self.items.index(sel)))
 
-    def insert_row(self, i, it):
-        name = it["text"] if it["kind"] == "link" else it["path"].name
-        self.tree.insert("", "end", iid=str(i), values=(it["time"], name))
-        self.tree.see(str(i))
+    def update_chip_counts(self):
+        for kind, chip in self.chips.items():
+            chip.set_count(sum(1 for it in self.items if it["kind"] == kind))
 
-    def add_item(self, kind, folder, path, text):
-        if self.current_folder != folder:
-            self.current_folder = folder
-            self.items = []
-            self.redraw()
-        it = {"kind": kind, "path": path, "text": text, "time": time.strftime("%H:%M:%S")}
+    def add_item(self, kind, folder, path, text, title):
+        if self.current_folder is None:
+            self.show_folder(folder)
+        elif self.current_folder != folder:
+            return  # results for another folder (an automatic merge); not on screen
+        it = {"kind": kind, "path": path, "text": text, "title": title}
+        key = item_key(it)
+        if key in self.keys:
+            return
+        self.keys.add(key)
         self.items.append(it)
-        if kind == self.show_var.get():
-            self.insert_row(len(self.items) - 1, it)
+        self.update_chip_counts()
+        if not self.visible(it):
+            return
+        at_bottom = self.tree.yview()[1] >= 0.999
+        iid = str(len(self.items) - 1)
+        self.tree.insert("", "end", iid=iid, text=f"●  {display_name(it)}", tags=(kind,))
+        if at_bottom and not self.tree.selection():
+            # Follow new items only when already at the end. Scroll once Tk has
+            # laid out the new row; scrolling straight away does nothing.
+            self.root.after_idle(lambda: self.tree.yview_moveto(1.0))
 
     def selected(self):
         sel = self.tree.selection()
         return self.items[int(sel[0])] if sel else None
+
+    # ----- content pane -----
 
     def preview(self, _=None):
         it = self.selected()
@@ -652,20 +893,56 @@ class App:
             return
         if it["kind"] == "transcript":
             try:
-                self.set_preview(ys.read_text(it["path"]))
+                text = ys.read_text(it["path"])
             except OSError:
-                self.set_preview("(file no longer there)")
+                text = "(this file is no longer there)"
         elif it["kind"] == "wav":
-            self.set_preview(wav_info(it["path"]) if it["path"].exists() else "(file no longer there)")
+            text = wav_info(it["path"]) if it["path"] and it["path"].exists() else "(this file is no longer there)"
+        elif it["kind"] == "link":
+            text = f"{it['title']}\n\n{it['text']}\n\nDouble-click to open it in your browser."
         else:
-            parts = it["text"].split(" | ")
-            self.set_preview("\n".join(parts))
+            text = f"{it['title']}\n\nSkipped: {it['text']}."
+        self.set_preview(text)
 
     def set_preview(self, text):
+        self.empty_hint.place_forget() if text else self.empty_hint.place(relx=0.5, rely=0.5, anchor="center")
         self.preview_text.configure(state="normal")
         self.preview_text.delete("1.0", "end")
         self.preview_text.insert("1.0", text)
         self.preview_text.configure(state="disabled")
+        self.run_search()
+
+    def run_search(self):
+        t = self.preview_text
+        t.tag_remove("match", "1.0", "end")
+        t.tag_remove("current", "1.0", "end")
+        needle = self.text_search.get()
+        self.matches = find_matches(t.get("1.0", "end-1c"), needle)
+        for off in self.matches:
+            t.tag_add("match", f"1.0+{off}c", f"1.0+{off + len(needle)}c")
+        self.match_i = 0 if self.matches else -1
+        self.show_match()
+
+    def step_match(self, step):
+        if self.matches:
+            self.match_i = (self.match_i + step) % len(self.matches)
+            self.show_match()
+        return "break"
+
+    def show_match(self):
+        t = self.preview_text
+        t.tag_remove("current", "1.0", "end")
+        needle = self.text_search.get()
+        if not needle:
+            self.match_label.configure(text="")
+            return
+        if not self.matches:
+            self.match_label.configure(text="No matches")
+            return
+        off = self.matches[self.match_i]
+        t.tag_add("current", f"1.0+{off}c", f"1.0+{off + len(needle)}c")
+        t.see(f"1.0+{off}c")
+        self.match_label.configure(text=f"{self.match_i + 1} of {len(self.matches)}")
 
     def open_selected(self, _=None):
         it = self.selected()
@@ -675,26 +952,20 @@ class App:
             open_path(it["path"])
         elif it["kind"] == "wav":
             open_path(it["path"].parent)
-        else:
+        elif it["kind"] == "link":
             import webbrowser
-            webbrowser.open(it["text"].split(" | ")[-1])
+            webbrowser.open(it["text"])
 
     def show_counts(self, counts):
         names = (("transcript", "transcripts"), ("merged", "merged"), ("wav", "waiting for Whisper"),
-                 ("pending", "to do"), ("needs-signin", "need sign-in"), ("failed", "failed"))
+                 ("pending", "to do"), ("no-captions", "no captions"), ("needs-signin", "need sign-in"),
+                 ("failed", "failed"))
         parts = [f"{label} {counts[k]}" for k, label in names if counts.get(k)]
         skipped = sum(v for k, v in counts.items() if k.startswith("skipped"))
         if skipped:
             parts.append(f"skipped {skipped}")
-        self.count_label.configure(text=", ".join(parts))
-
-    # ----- log and progress -----
-
-    def write_log(self, msg):
-        self.log.configure(state="normal")
-        self.log.insert("end", msg + "\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
+        self.counts_text = ", ".join(parts)
+        self.update_status()
 
     # ----- running -----
 
@@ -705,9 +976,13 @@ class App:
         if self.busy():
             messagebox.showinfo(APP_NAME, "yt-slurp is already working. Wait for it to finish, or click Stop.")
             return
-        self.slurp_btn.configure(state="disabled")
-        self.stop_btn.configure(state="normal")
-        self.stage_label.configure(text=label)
+        ys.PAUSE.clear()
+        self.slurp_btn.set_enabled(False)
+        self.pause_btn.set_text("Pause")
+        self.pause_btn.set_enabled(True)
+        self.stop_btn.set_enabled(True)
+        self.stage = label
+        self.update_status()
         self.bar.configure(mode="indeterminate")
         self.bar.start(15)
 
@@ -718,15 +993,17 @@ class App:
         self.worker = threading.Thread(target=work, daemon=True)
         self.worker.start()
 
-    def slurp(self):
-        self.store()
+    def slurp_menu(self, x, y):
+        self.type_menu.tk_popup(x, y)
+
+    def slurp(self, only_type: str | None = None):
         url = self.url_var.get().strip()
         if url:
             self.list_file = ""
             self.list_label.configure(text="")
         if not url and not self.list_file:
             messagebox.showinfo(APP_NAME, "Paste a YouTube channel or playlist link first.")
-            self.url_entry.focus_set()
+            self.url_box.entry.focus_set()
             return
         if url:
             kind, _, note = ys.classify_url(url)
@@ -738,24 +1015,46 @@ class App:
             if kind == "unknown":
                 messagebox.showinfo(APP_NAME, f"That link doesn't look right: {note}.")
                 return
-        self.items = []
-        self.current_folder = None
-        self.redraw()
+        if not any(self.settings[k] for k in ("make_transcripts", "make_wavs", "make_links")):
+            messagebox.showinfo(APP_NAME, "Settings has Transcripts, WAV files and Links all turned off, "
+                                          "so there is nothing to make.")
+            return
+        self.clear_items()
         self.write_log("")
-        self.start(build_argv(self.settings, url, self.list_file), "Starting...")
+        self.start(build_argv(self.settings, url, self.list_file, only_type), "Starting...")
+
+    def toggle_pause(self):
+        if ys.PAUSE.is_set():
+            ys.PAUSE.clear()
+            self.pause_btn.set_text("Pause")
+            self.stage = "Carrying on..."
+            self.bar.configure(mode="indeterminate")
+            self.bar.start(15)
+        else:
+            ys.PAUSE.set()
+            self.pause_btn.set_text("Resume")
+            self.stage = "Paused. Click Resume to carry on."
+            self.bar.stop()
+        self.update_status()
 
     def stop(self):
         ys.STOP.set()
-        self.stop_btn.configure(state="disabled")
-        self.stage_label.configure(text="Stopping after the current step...")
+        self.stop_btn.set_enabled(False)
+        self.pause_btn.set_enabled(False)
+        self.stage = "Stopping after the current step..."
+        self.update_status()
 
     def finished(self, code, after):
+        ys.PAUSE.clear()
         self.bar.stop()
         self.bar.configure(mode="determinate", value=0)
-        self.slurp_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
-        self.stage_label.configure(text={0: "Finished.", 130: "Stopped. Click Slurp again to carry on."}
-                                   .get(code, "Stopped with a problem. See the messages below."))
+        self.slurp_btn.set_enabled(True)
+        self.pause_btn.set_text("Pause")
+        self.pause_btn.set_enabled(False)
+        self.stop_btn.set_enabled(False)
+        self.stage = {0: "Finished.", 130: "Stopped. Slurp the same link again to carry on."}.get(
+            code, "Stopped with a problem. Click here to see the log.")
+        self.update_status()
         self.refresh_sources()
         if after:
             after(code)
@@ -765,8 +1064,7 @@ class App:
     def poll(self):
         try:
             while True:
-                msg = self.events.get_nowait()
-                self.handle(msg)
+                self.handle(self.events.get_nowait())
         except queue.Empty:
             pass
         if self.instance.raise_wanted():
@@ -781,17 +1079,18 @@ class App:
             self.write_log(msg[1])
         elif kind == "progress":
             _, stage, done, total = msg
-            self.bar.stop()
-            self.bar.configure(mode="determinate", maximum=max(total, 1), value=done)
-            self.stage_label.configure(text=f"{stage}: {done} of {total}")
+            if not ys.PAUSE.is_set():
+                self.bar.stop()
+                self.bar.configure(mode="determinate", maximum=max(total, 1), value=done)
+                self.stage = f"{stage}: {done} of {total}"
+                self.update_status()
         elif kind == "counts":
             _, folder, counts = msg
             if self.current_folder in (None, folder):
-                self.current_folder = folder
                 self.show_counts(counts)
         elif kind == "item":
-            _, ikind, folder, path, text = msg
-            self.add_item(ikind, folder, path, text)
+            _, ikind, folder, path, text, title = msg
+            self.add_item(ikind, folder, path, text, title)
             if self.smoke_waiting and ikind == "transcript" and folder.name == "smoke-test":
                 self.smoke_waiting = False
                 messagebox.showinfo(APP_NAME, "Test passed. The Whisper app kept the filenames, and the "
@@ -834,10 +1133,10 @@ class App:
         return ["--chunk-words", str(s["chunk_words"]), "--max-sources", str(s["max_sources"]),
                 "--max-source-words", str(s["max_source_words"])]
 
-    def merge_now(self):
+    def rebuild_combined(self):
         folder = self.current_folder or self.ask_folder()
         if folder:
-            self.start(["merge", str(folder)] + self.combined_args(), "Merging Whisper text...")
+            self.start(["merge", str(folder)] + self.combined_args(), "Rebuilding Claude and Gemini files...")
 
     def ask_folder(self):
         d = filedialog.askdirectory(title="Choose the channel or playlist folder", initialdir=self.settings["output"])
@@ -863,15 +1162,8 @@ class App:
         folder = self.folder_or_ask()
         if not folder:
             return
-        man = folder / "manifest.csv"
-        waiting = []
-        if man.exists():
-            waiting = sorted({int(r["batch"]) for r in ys.Manifest(man).rows.values()
-                              if r["status"] == "wav" and r["batch"].isdigit()})
         target = folder / ys.DIR_NEEDS
-        if waiting:
-            target = target / ys.batch_dir_name(waiting[0])
-        elif man.exists() and not any(r["status"] == "wav" for r in ys.Manifest(man).rows.values()):
+        if not target.is_dir() or not any(target.glob("*.wav")):
             messagebox.showinfo(APP_NAME, "No WAV files are waiting for the Whisper app in this folder.")
             return
         open_path(target)
@@ -883,11 +1175,9 @@ class App:
             bring_to_front(hwnd)
             return
         if not s["whisper_path"] or not Path(s["whisper_path"]).exists():
-            messagebox.showinfo(APP_NAME, "Show yt-slurp where the Whisper app is. Choose its .exe, .bat, "
-                                          ".py file or shortcut.")
-            self.pick_whisper()
-            if not s["whisper_path"]:
-                return
+            messagebox.showinfo(APP_NAME, "Show yt-slurp where the Whisper app is, in Settings, under Whisper app.")
+            self.open_settings()
+            return
         path = Path(s["whisper_path"])
         if os.name == "nt":
             os.startfile(str(path), cwd=str(path.parent))
@@ -898,6 +1188,9 @@ class App:
         folder = self.folder_or_ask()
         if folder:
             open_path(folder / "manifest.csv")
+
+    def open_settings(self):
+        SettingsDialog(self)
 
     # ----- tools -----
 
@@ -914,7 +1207,7 @@ class App:
                 return
             self.show_folder(folder)
             self.smoke_waiting = True
-            open_path(folder / ys.DIR_NEEDS / ys.batch_dir_name(1))
+            open_path(folder / ys.DIR_NEEDS)
             messagebox.showinfo(
                 APP_NAME,
                 "Two short test WAVs are ready, and their folder is open.\n\n"
@@ -926,6 +1219,7 @@ class App:
                 "happens a few seconds after you save both, the filenames were changed: tell Claude "
                 "exactly how the saved names differ.")
 
+        self.clear_items()
         self.start(["smoke-wav", str(folder)], "Making the test WAVs...", after)
 
     def self_test(self):
@@ -940,20 +1234,23 @@ class App:
         if r.returncode == 0:
             messagebox.showinfo(APP_NAME, f"Self-test passed: {last}")
         else:
-            messagebox.showwarning(APP_NAME, f"Self-test failed: {last}\n\nThe details are in the messages below.")
+            messagebox.showwarning(APP_NAME, f"Self-test failed: {last}\n\nThe details are in the log.")
 
     def welcome(self):
         messagebox.showinfo(
             "How to use yt-slurp",
-            "1. Paste a YouTube channel or playlist link at the top, and click Slurp.\n\n"
-            "2. Questions pop up when yt-slurp needs an answer, for example which kinds of video to include.\n\n"
-            "3. Results appear on the right as they are made. Choose Transcripts, WAV files or Links above "
-            "the list. Click one to read it; double-click to open it.\n\n"
+            "1. Paste a YouTube channel or playlist link at the top and click Slurp. The arrow on the right of "
+            "Slurp lets you do just normal videos, just Shorts or just live streams.\n\n"
+            "2. Questions pop up when yt-slurp needs an answer.\n\n"
+            "3. Results appear on the left as they are made: transcripts, WAV files, links and skipped "
+            "videos, each in its own colour. Click the chips to hide or show each kind. Click a result to "
+            "read it on the right.\n\n"
             "4. Videos without captions become WAV files. Click Open WAV folder and Launch Whisper app, "
             "drag the WAVs in, and save each transcript into the whisper-transcripts folder. yt-slurp "
             "merges them by itself.\n\n"
             "5. The files for Claude and Gemini Notebook are under Open Claude files and Open Gemini files.\n\n"
-            "Before your first real batch, use Tools, then Check the Whisper app keeps filenames.")
+            "Settings are under the gear at the top right. Before your first real batch, use Tools, then "
+            "Check the Whisper app keeps filenames.")
         self.settings["welcomed"] = True
         save_settings(self.settings)
 
@@ -963,8 +1260,9 @@ class App:
                                                  "Progress so far is saved."):
                 return
             ys.STOP.set()
+            ys.PAUSE.clear()
             self.worker.join(timeout=10)
-        self.store()
+        save_settings(self.settings)
         self.instance.release()
         self.root.destroy()
 
@@ -973,21 +1271,237 @@ class App:
 # Dialogs
 # =============================================================================
 
+def modal(parent, title) -> tuple[tk.Toplevel, tk.Frame]:
+    top = tk.Toplevel(parent)
+    top.title(title)
+    top.configure(bg=CARD)
+    top.transient(parent)
+    top.resizable(False, False)
+    frame = tk.Frame(top, bg=CARD)
+    frame.pack(fill="both", expand=True, padx=22, pady=18)
+    top.after_idle(lambda: centre_over(top, parent))
+    return top, frame
+
+
+def centre_over(top, parent):
+    """Open a pop-up in the middle of the main window."""
+    try:
+        top.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() - top.winfo_reqwidth()) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - top.winfo_reqheight()) // 3
+        top.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+    except tk.TclError:
+        pass
+
+
+def heading(parent, text):
+    tk.Label(parent, text=text, bg=CARD, fg=TEXT, font=(FONT, 11, "bold")).pack(anchor="w", pady=(12, 4))
+
+
+class SettingsDialog:
+    """All settings in one place. Save keeps them; Cancel throws the changes away."""
+
+    def __init__(self, app: App):
+        self.app = app
+        s = app.settings
+        top, frame = modal(app.root, "yt-slurp settings")
+        self.top = top
+        cols = tk.Frame(frame, bg=CARD)
+        cols.pack(fill="both")
+        left = tk.Frame(cols, bg=CARD)
+        left.pack(side="left", fill="y", anchor="n", padx=(0, 30))
+        right = tk.Frame(cols, bg=CARD)
+        right.pack(side="left", fill="y", anchor="n")
+        self.vars: dict[str, tk.Variable] = {}
+
+        def check(parent, key, text, command=None, indent=0):
+            v = tk.BooleanVar(value=s[key])
+            self.vars[key] = v
+            w = ttk.Checkbutton(parent, text=text, variable=v, command=command)
+            w.pack(anchor="w", padx=(indent, 0), pady=1)
+            return w
+
+        def number(parent, key, before, after, lo, hi, width=6):
+            row = tk.Frame(parent, bg=CARD)
+            row.pack(anchor="w", pady=2)
+            tk.Label(row, text=before, bg=CARD, fg=TEXT, font=(FONT, 10)).pack(side="left")
+            v = tk.StringVar(value=str(s[key]))
+            self.vars[key] = v
+            ttk.Spinbox(row, from_=lo, to=hi, width=width, textvariable=v).pack(side="left", padx=5)
+            if after:
+                tk.Label(row, text=after, bg=CARD, fg=TEXT, font=(FONT, 10)).pack(side="left")
+
+        heading(left, "Which videos")
+        check(left, "ask_types", "Ask me each time", command=self.toggle_types)
+        self.type_vars, self.type_checks = {}, []
+        for key in ys.TYPES:
+            v = tk.BooleanVar(value=key in s["types"])
+            self.type_vars[key] = v
+            cb = ttk.Checkbutton(left, text=TYPE_LABELS[key], variable=v)
+            cb.pack(anchor="w", padx=(22, 0), pady=1)
+            self.type_checks.append(cb)
+        number(left, "min_minutes", "Skip videos shorter than", "minutes", 0, 600)
+        check(left, "test_run", "Test run: only do the first few videos")
+        number(left, "limit", "How many in a test run:", "", 1, 1000)
+
+        heading(left, "What to make")
+        check(left, "make_transcripts", "Transcripts (from captions)")
+        check(left, "make_wavs", "WAV files (for videos without captions)")
+        check(left, "make_links", "Links (links.txt)")
+
+        heading(left, "Transcripts")
+        row = tk.Frame(left, bg=CARD)
+        row.pack(anchor="w", pady=2)
+        tk.Label(row, text="Caption language:", bg=CARD, fg=TEXT, font=(FONT, 10)).pack(side="left")
+        self.lang_var = tk.StringVar(value=dict(LANGUAGES).get(s["lang"], s["lang"]))
+        ttk.Combobox(row, textvariable=self.lang_var, width=14, values=[n for _, n in LANGUAGES]).pack(
+            side="left", padx=5)
+        check(left, "timestamps", "Add the time at the start of each paragraph")
+
+        heading(left, "Videos without captions")
+        check(left, "include_non_english", "Make WAVs for videos not in English")
+        number(left, "chunk_minutes", "Split long audio into parts of", "minutes", 0, 600)
+
+        heading(right, "Pace")
+        self.pace_var = tk.StringVar(value=s["pace"])
+        for key, label in PACE_LABELS:
+            ttk.Radiobutton(right, text=label, value=key, variable=self.pace_var).pack(anchor="w", pady=1)
+
+        heading(right, "Where things go")
+        self.output_var = tk.StringVar(value=s["output"])
+        tk.Label(right, textvariable=self.output_var, bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=330,
+                 justify="left").pack(anchor="w")
+        RoundButton(right, "Change results folder...", self.pick_output, height=30, bg=CARD).pack(anchor="w", pady=4)
+
+        heading(right, "Whisper app")
+        self.whisper_var = tk.StringVar(value=s["whisper_path"] or "Not set yet")
+        tk.Label(right, textvariable=self.whisper_var, bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=330,
+                 justify="left").pack(anchor="w")
+        RoundButton(right, "Choose the Whisper app...", self.pick_whisper, height=30, bg=CARD).pack(anchor="w", pady=4)
+        row = tk.Frame(right, bg=CARD)
+        row.pack(anchor="w", pady=2)
+        tk.Label(row, text="Its window title contains:", bg=CARD, fg=TEXT, font=(FONT, 10)).pack(side="left")
+        v = tk.StringVar(value=s["whisper_title"])
+        self.vars["whisper_title"] = v
+        ttk.Entry(row, textvariable=v, width=14).pack(side="left", padx=5)
+
+        heading(right, "Advanced")
+        number(right, "chunk_words", "Words per Claude file:", "", 1000, 2_000_000, width=9)
+        number(right, "max_sources", "Gemini Notebook sources:", "", 1, 1000, width=9)
+        number(right, "max_source_words", "Words per Gemini source:", "", 1000, 500_000, width=9)
+
+        btns = tk.Frame(frame, bg=CARD)
+        btns.pack(fill="x", pady=(18, 0))
+        RoundButton(btns, "Save", self.save, colour=GREEN, hover=GREEN_DARK, width=100, bg=CARD).pack(side="right")
+        RoundButton(btns, "Cancel", top.destroy, width=100, bg=CARD).pack(side="right", padx=8)
+        self.toggle_types()
+        top.grab_set()
+        top.lift()
+
+    def toggle_types(self):
+        state = ["disabled"] if self.vars["ask_types"].get() else ["!disabled"]
+        for cb in self.type_checks:
+            cb.state(state)
+
+    def pick_output(self):
+        d = filedialog.askdirectory(parent=self.top, title="Where should yt-slurp save results?",
+                                    initialdir=self.output_var.get())
+        if d:
+            self.output_var.set(d)
+
+    def pick_whisper(self):
+        f = filedialog.askopenfilename(
+            parent=self.top, title="Choose the Whisper app (its .exe, .bat, .py or shortcut)",
+            filetypes=[("Programs and scripts", "*.exe *.bat *.cmd *.py *.pyw *.lnk"), ("All files", "*.*")])
+        if f:
+            self.whisper_var.set(f)
+
+    def save(self):
+        s = self.app.settings
+        for key, var in self.vars.items():
+            val = var.get()
+            if key in ("min_minutes", "chunk_minutes"):
+                try:
+                    val = float(val)
+                    val = int(val) if val == int(val) else val
+                except ValueError:
+                    val = DEFAULT_SETTINGS[key]
+            elif key in ("limit", "chunk_words", "max_sources", "max_source_words"):
+                try:
+                    val = max(1, int(float(val)))
+                except ValueError:
+                    val = DEFAULT_SETTINGS[key]
+            s[key] = val
+        s["types"] = [k for k, v in self.type_vars.items() if v.get()] or ["videos"]
+        name = self.lang_var.get().strip()
+        s["lang"] = next((c for c, n in LANGUAGES if n.lower() == name.lower()), name.lower() or "en")
+        s["pace"] = self.pace_var.get()
+        if self.output_var.get() != s["output"]:
+            s["output"] = self.output_var.get()
+        if self.whisper_var.get() != "Not set yet":
+            s["whisper_path"] = self.whisper_var.get()
+        save_settings(s)
+        self.app.refresh_sources()
+        self.top.destroy()
+
+
+class LogWindow:
+    """The full message history, opened from the status bar."""
+
+    def __init__(self, app: App):
+        self.app = app
+        top, frame = modal(app.root, "yt-slurp log")
+        top.resizable(True, True)
+        top.geometry("820x520")
+        self.top = top
+        textf = tk.Frame(frame, bg=CARD)
+        textf.pack(fill="both", expand=True)
+        self.text = tk.Text(textf, wrap="word", font=("Consolas", 9), relief="flat", bg="#f7f7f7", fg=TEXT,
+                            padx=8, pady=6, highlightthickness=0)
+        sb = ttk.Scrollbar(textf, orient="vertical", command=self.text.yview, style="Slim.Vertical.TScrollbar")
+        self.text.configure(yscrollcommand=sb.set)
+        self.text.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.text.insert("end", "\n".join(app.log_lines) + "\n")
+        self.text.see("end")
+        self.text.configure(state="disabled")
+        btns = tk.Frame(frame, bg=CARD)
+        btns.pack(fill="x", pady=(10, 0))
+        RoundButton(btns, "Close", self.close, width=90, bg=CARD).pack(side="right")
+        RoundButton(btns, "Copy all", self.copy, width=90, bg=CARD).pack(side="right", padx=8)
+        top.protocol("WM_DELETE_WINDOW", self.close)
+
+    def append(self, msg):
+        at_end = self.text.yview()[1] >= 0.999
+        self.text.configure(state="normal")
+        self.text.insert("end", msg + "\n")
+        self.text.configure(state="disabled")
+        if at_end:
+            self.text.see("end")
+
+    def copy(self):
+        self.top.clipboard_clear()
+        self.top.clipboard_append("\n".join(self.app.log_lines))
+
+    def close(self):
+        self.app.log_window = None
+        self.top.destroy()
+
+
 class ChoiceDialog:
     """A question with one button per answer. Closing it picks the cautious
     answer: keep what exists, or don't use a browser."""
 
     def __init__(self, parent, question, options):
         self.result = next((k for k, _ in options if k in ("update", "none")), options[-1][0])
-        top = self.top = tk.Toplevel(parent)
-        top.title(APP_NAME)
-        top.transient(parent)
-        top.resizable(False, False)
-        frame = ttk.Frame(top, padding=16)
-        frame.pack(fill="both")
-        ttk.Label(frame, text=question, wraplength=420, font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 12))
-        for key, label in options:
-            ttk.Button(frame, text=label, command=lambda k=key: self.pick(k)).pack(fill="x", pady=2)
+        top, frame = modal(parent, APP_NAME)
+        self.top = top
+        tk.Label(frame, text=question, wraplength=420, bg=CARD, fg=TEXT, font=(FONT, 10), justify="left").pack(
+            anchor="w", pady=(0, 12))
+        for i, (key, label) in enumerate(options):
+            colour, hover = (GREEN, GREEN_DARK) if i == 0 else (SLATE, SLATE_DARK)
+            RoundButton(frame, label, lambda k=key: self.pick(k), colour=colour, hover=hover, width=420,
+                        bg=CARD).pack(pady=3)
         top.protocol("WM_DELETE_WINDOW", top.destroy)
         top.grab_set()
         top.lift()
@@ -1007,29 +1521,24 @@ class TypesDialog:
         for _, counts in found:
             for t, n in counts.items():
                 totals[t] = totals.get(t, 0) + n
-        top = self.top = tk.Toplevel(parent)
-        top.title(APP_NAME)
-        top.transient(parent)
-        top.resizable(False, False)
-        frame = ttk.Frame(top, padding=16)
-        frame.pack(fill="both")
-        ttk.Label(frame, text="Which kinds of video should yt-slurp include?",
-                  font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        top, frame = modal(parent, APP_NAME)
+        self.top = top
+        tk.Label(frame, text="Which kinds of video should yt-slurp include?", bg=CARD, fg=TEXT,
+                 font=(FONT, 11, "bold")).pack(anchor="w")
         if len(found) > 1:
             for name, counts in found:
-                ttk.Label(frame, text=f"{name}: " + ", ".join(f"{n} {t}" for t, n in counts.items()),
-                          foreground="#555").pack(anchor="w")
+                tk.Label(frame, text=f"{name}: " + ", ".join(f"{n} {t}" for t, n in counts.items()), bg=CARD,
+                         fg=MUTED, font=(FONT, 9)).pack(anchor="w")
         self.vars = {}
-        labels = {"videos": "Normal videos", "shorts": "Shorts", "streams": "Live streams"}
         for t in ys.TYPES:
             if t in totals:
                 v = tk.BooleanVar(value=(t == "videos"))
                 self.vars[t] = v
-                ttk.Checkbutton(frame, text=f"{labels[t]} ({totals[t]})", variable=v).pack(anchor="w", pady=2)
-        row = ttk.Frame(frame)
-        row.pack(fill="x", pady=(12, 0))
-        ttk.Button(row, text="All of them", command=self.all).pack(side="left")
-        ttk.Button(row, text="Carry on", command=self.ok).pack(side="right")
+                ttk.Checkbutton(frame, text=f"{TYPE_LABELS[t]} ({totals[t]})", variable=v).pack(anchor="w", pady=3)
+        row = tk.Frame(frame, bg=CARD)
+        row.pack(fill="x", pady=(14, 0))
+        RoundButton(row, "Carry on", self.ok, colour=GREEN, hover=GREEN_DARK, width=110, bg=CARD).pack(side="right")
+        RoundButton(row, "All of them", self.all, width=110, bg=CARD).pack(side="right", padx=8)
         top.protocol("WM_DELETE_WINDOW", self.ok)
         top.grab_set()
         parent.wait_window(top)
@@ -1051,6 +1560,12 @@ def main() -> int:
     instance = InstanceLock()
     if not instance.acquire():
         return 0  # the open window has been asked to come to the front
+    if os.name == "nt":
+        try:  # own taskbar entry and icon, rather than Python's
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("yt-slurp.app")
+        except (AttributeError, OSError):
+            pass
     root = tk.Tk()
     root.report_callback_exception = report_crash
     try:

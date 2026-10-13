@@ -111,7 +111,7 @@ def test_safe_filename_keeps_hyphen_underscore():
 
 
 def test_video_stem_and_part_suffix():
-    assert ys.video_stem("20240308", "Title", "dQw4w9WgXcQ") == "2024-03-08 Title [dQw4w9WgXcQ]"
+    assert ys.video_stem("20240308", "Title", "dQw4w9WgXcQ") == "Title [dQw4w9WgXcQ] 2024-03-08"
     assert ys.part_suffix(1, 3) == " part 01 of 03"
     assert ys.part_suffix(1, 1) == ""
 
@@ -120,10 +120,10 @@ def test_title_budget_keeps_longest_path_under_limit():
     out = Path("C:/Users/someone/Documents/" + "deep folder/" * 6 + "output/Channel Name")
     budget = ys.title_budget(out)
     title = ys.fit_title(ys.safe_filename("x " * 200), budget)
-    longest = (f"{out}/{ys.DIR_NEEDS}/batch 999/"
+    longest = (f"{out}/{ys.DIR_NEEDS}/"
                + ys.video_stem("20240308", title, "dQw4w9WgXcQ") + ys.part_suffix(99, 99) + ".wav")
     assert len(longest) <= ys.MAX_PATH_LEN
-    assert "[dQw4w9WgXcQ] part 99 of 99.wav" in longest
+    assert "[dQw4w9WgXcQ] 2024-03-08 part 99 of 99.wav" in longest
 
 
 def test_title_budget_capped_at_max_title():
@@ -207,16 +207,42 @@ def test_cuts_to_ranges_no_overlap():
     assert ranges == [(0, 100), (100, 210), (210, 300)]
 
 
-def test_batch_allocator_keeps_parts_together_and_appends():
-    b = ys.BatchAllocator(last_batch=2, size=10)
-    assert [b.add(n) for n in (3, 3, 3, 3, 12, 1)] == [3, 3, 3, 4, 5, 6]
+def test_new_style_name_moves_date_after_id():
+    assert ys.new_style_name("2024-03-08 My Talk [dQw4w9WgXcQ] part 01 of 02.wav") == \
+        "My Talk [dQw4w9WgXcQ] 2024-03-08 part 01 of 02.wav"
+    assert ys.new_style_name("undated My Talk [dQw4w9WgXcQ].txt") == "My Talk [dQw4w9WgXcQ] undated.txt"
+    assert ys.new_style_name("My Talk [dQw4w9WgXcQ] 2024-03-08.txt") is None
 
 
-def test_batch_allocator_disabled():
-    assert ys.BatchAllocator(0, 0).add(5) == 0
+def test_part_of():
+    assert ys.part_of("T [dQw4w9WgXcQ] 2024-03-08 part 02 of 03.wav") == (2, 3)
+    assert ys.part_of("T [dQw4w9WgXcQ] 2024-03-08.wav") is None
+
+
+def test_skip_reason():
+    assert ys.skip_reason("skipped-short", 5) == "shorter than 5 minutes"
+    assert ys.skip_reason("skipped-short", 2.5) == "shorter than 2.5 minutes"
+    assert ys.skip_reason("skipped-non-english") == "not in English, no captions"
+    assert ys.skip_reason("no-captions") == "no captions, WAVs turned off"
+    assert ys.skip_reason("pending", error="transcripts turned off") == "has captions, transcripts turned off"
+    assert ys.skip_reason("transcript") == ""
+
+
+def test_transcript_sort_key_uses_manifest_date(tmp_path):
+    m = ys.Manifest(tmp_path / "manifest.csv")
+    m.set("aaaaaaaaaa1", upload_date="20230101")
+    names = ["Zebra [aaaaaaaaaa1] 2023-01-01.txt", "Apple [bbbbbbbbbb2] 2024-05-05.txt"]
+    assert sorted(names, key=lambda n: ys.transcript_sort_key(n, m))[0].startswith("Zebra")
 
 
 # ----- merge -----
+
+def test_parse_transcript_filename_title_first():
+    assert ys.parse_transcript_filename("T [dQw4w9WgXcQ] 2024-03-08 part 02 of 03.txt") == ("dQw4w9WgXcQ", 2, 3)
+    assert ys.parse_transcript_filename("T [dQw4w9WgXcQ] 2024-03-08.txt") == ("dQw4w9WgXcQ", 1, 1)
+    assert ys.parse_transcript_filename("T [dQw4w9WgXcQ] 2024-03-08 part 01 of 02 (1).txt") == ("dQw4w9WgXcQ", 1, 2)
+    assert ys.parse_transcript_filename("T [dQw4w9WgXcQ] 2024-03-08.wav") is None
+
 
 def test_parse_transcript_filename():
     assert ys.parse_transcript_filename("2024-03-08 T [dQw4w9WgXcQ] part 02 of 03.txt") == ("dQw4w9WgXcQ", 2, 3)
@@ -286,7 +312,7 @@ def test_build_combined_end_to_end(tmp_path):
     t = tmp_path / ys.DIR_TRANSCRIPTS
     t.mkdir()
     for i, date in enumerate(["2024-01-01", "2023-05-05", "2024-06-01"]):
-        (t / f"{date} V{i} [{'a' * 10}{i}].txt").write_text(f"Title: V{i}\n\n" + "word " * 50, encoding="utf-8")
+        (t / f"V{i} [{'a' * 10}{i}] {date}.txt").write_text(f"Title: V{i}\n\n" + "word " * 50, encoding="utf-8")
     stats = ys.build_combined(tmp_path, chunk_words=120, max_sources=2, max_source_words=1000)
     claude = sorted((tmp_path / ys.DIR_CLAUDE).iterdir())
     gemini = sorted((tmp_path / ys.DIR_GEMINI).iterdir())

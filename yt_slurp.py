@@ -50,7 +50,6 @@ DEFAULT_MIN_MINUTES = 5
 DEFAULT_LANG = "en"
 DEFAULT_WAV_RATE = 16_000
 DEFAULT_CHUNK_MINUTES = 60
-DEFAULT_BATCH_FILES = 10
 DEFAULT_OUTPUT = "output"
 
 MAX_PATH_LEN = 240          # every file yt-slurp writes stays at or under this
@@ -75,7 +74,9 @@ MIN_PART_S = 60
 SHORTS_MAX_S = 180  # YouTube Shorts are at most 3 minutes
 
 # Network politeness and retries.
-DELAY_RANGE_S = (2.0, 5.0)
+PACES = {"normal": (2.0, 5.0), "slow": (5.0, 10.0), "very-slow": (10.0, 20.0)}
+DELAY_RANGE_S = PACES["normal"]  # set from --pace at the start of a run
+ROUND_SIZE = 10  # videos per round; links and combined files are rewritten after each
 RETRY_DELAYS_S = (10, 20, 40, 80, 160)
 BOT_CHECK_LIMIT = 3  # consecutive "confirm you're not a bot" errors before pausing
 CAPTION_INFO_MAX_AGE_S = 3 * 3600  # caption URLs in cached metadata expire
@@ -85,7 +86,7 @@ TYPE_LABEL = {"videos": "video", "shorts": "short", "streams": "stream"}
 BROWSERS = ("chrome", "edge", "firefox", "brave")
 
 STATUSES = (
-    "pending", "transcript", "wav", "merged", "skipped-short", "skipped-live",
+    "pending", "transcript", "wav", "merged", "no-captions", "skipped-short", "skipped-live",
     "skipped-private", "skipped-non-english", "needs-signin", "failed",
 )
 MANIFEST_FIELDS = (
@@ -148,7 +149,8 @@ def iso_date(yyyymmdd: str | None) -> str:
 
 
 def video_stem(date: str, title: str, vid: str) -> str:
-    return f"{iso_date(date)} {title} {ID_OPEN}{vid}{ID_CLOSE}"
+    """Title first, because people look for videos by title; the ID and date follow."""
+    return f"{title} {ID_OPEN}{vid}{ID_CLOSE} {iso_date(date)}"
 
 
 def part_suffix(part: int, parts: int) -> str:
@@ -158,11 +160,11 @@ def part_suffix(part: int, parts: int) -> str:
 def title_budget(out_dir: Path, max_path: int = MAX_PATH_LEN) -> int:
     """Characters left for the title in the longest path a video produces.
 
-    The longest is a WAV part in a batch folder:
-    <out_dir>/needs-transcription/batch 999/<date> <title> [<id>] part 99 of 99.wav
+    The longest is a WAV part:
+    <out_dir>/needs-transcription/<title> [<id>] <date> part 99 of 99.wav
     The Whisper app's .txt for it lives in whisper-transcripts/, which is shorter.
     """
-    fixed = len(str(out_dir)) + len(f"/{DIR_NEEDS}/batch 999/")
+    fixed = len(str(out_dir)) + len(f"/{DIR_NEEDS}/")
     fixed += len(video_stem("2000-01-01", "", "x" * 11)) + len(part_suffix(99, 99)) + len(".wav")
     return min(MAX_TITLE_LEN, max_path - fixed)
 
@@ -485,7 +487,7 @@ def is_english(language: str | None) -> bool:
 
 
 # =============================================================================
-# Pure helpers: audio splitting and batches
+# Pure helpers: audio splitting
 # =============================================================================
 
 def plan_boundaries(duration: float, chunk_s: float) -> list[float]:
@@ -533,51 +535,64 @@ def cuts_to_ranges(duration: float, cuts: list[float]) -> list[tuple[float, floa
     return [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
 
 
-class BatchAllocator:
-    """Assigns WAV batch numbers. A video's files share one batch; each run
-    starts a new batch after the highest existing one (append-only)."""
-
-    def __init__(self, last_batch: int, size: int):
-        self.size = size
-        self.current = last_batch
-        self.count = 0
-        self.started = False
-
-    def add(self, nfiles: int) -> int:
-        if self.size <= 0:
-            return 0
-        if not self.started or (self.count > 0 and self.count + nfiles > self.size):
-            self.current += 1
-            self.count = 0
-            self.started = True
-        self.count += nfiles
-        return self.current
-
-
-def batch_dir_name(batch: int) -> str:
-    return f"batch {batch:02d}"
-
-
 # =============================================================================
 # Pure helpers: merge
 # =============================================================================
 
-_TXT_RE = re.compile(
-    re.escape(ID_OPEN) + r"([A-Za-z0-9_-]{11})" + re.escape(ID_CLOSE)
-    + r"(?: part (\d{1,3}) of (\d{1,3}))?(?:\s*\(\d+\))?\.txt$",
-    re.IGNORECASE,
-)
+_ID_RE = re.compile(re.escape(ID_OPEN) + r"([A-Za-z0-9_-]{11})" + re.escape(ID_CLOSE))
+_PART_RE = re.compile(r" part (\d{1,3}) of (\d{1,3})(?:\s*\(\d+\))?\.[A-Za-z0-9]+$", re.IGNORECASE)
 
 
 def parse_transcript_filename(name: str) -> tuple[str, int, int] | None:
-    """'... [id] part 02 of 03.txt' to (id, 2, 3). No part suffix means (id, 1, 1)."""
-    m = _TXT_RE.search(name)
+    """'Title [id] 2024-03-08 part 02 of 03.txt' to (id, 2, 3); no part suffix
+    means (id, 1, 1). Older date-first names parse the same way."""
+    if not name.lower().endswith(".txt"):
+        return None
+    m = _ID_RE.search(name)
     if not m:
         return None
-    vid, part, parts = m.group(1), m.group(2), m.group(3)
-    if part:
-        return vid, int(part), int(parts)
-    return vid, 1, 1
+    p = _PART_RE.search(name)
+    if p:
+        return m.group(1), int(p.group(1)), int(p.group(2))
+    return m.group(1), 1, 1
+
+
+def part_of(name: str) -> tuple[int, int] | None:
+    """(part, parts) from a filename ending 'part NN of NN.ext', else None."""
+    p = _PART_RE.search(name)
+    return (int(p.group(1)), int(p.group(2))) if p else None
+
+
+_OLD_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|undated) (.*) (" + re.escape(ID_OPEN)
+                          + r"[A-Za-z0-9_-]{11}" + re.escape(ID_CLOSE) + r")(.*)$")
+
+
+def new_style_name(name: str) -> str | None:
+    """'2024-03-08 Title [id] part 01 of 02.wav' to 'Title [id] 2024-03-08 part 01 of 02.wav'.
+    None if the name is already title-first."""
+    m = _OLD_NAME_RE.match(name)
+    if not m:
+        return None
+    date, title, token, rest = m.groups()
+    return f"{title} {token} {date}{rest}"
+
+
+def skip_reason(status: str, min_minutes=DEFAULT_MIN_MINUTES, error: str = "") -> str:
+    """Plain-English reason a video was not transcribed, for the window."""
+    if status == "skipped-short":
+        mins = int(min_minutes) if float(min_minutes) == int(float(min_minutes)) else min_minutes
+        return f"shorter than {mins} minutes"
+    if status == "skipped-non-english":
+        return "not in English, no captions"
+    if status == "skipped-private":
+        return "private or deleted"
+    if status == "skipped-live":
+        return "live stream not finished"
+    if status == "no-captions":
+        return "no captions, WAVs turned off"
+    if status == "pending" and error == "transcripts turned off":
+        return "has captions, transcripts turned off"
+    return ""
 
 
 def collect_whisper_files(files: list[tuple[str, float]]):
@@ -728,8 +743,9 @@ class ConsoleUI:
     def counts(self, folder: Path, counts: dict) -> None:
         pass
 
-    def item(self, kind: str, folder: Path, path: Path | None = None, text: str = "") -> None:
-        """A transcript, WAV or link has been created (kind: transcript, wav, link)."""
+    def item(self, kind: str, folder: Path, path: Path | None = None, text: str = "", title: str = "") -> None:
+        """A result has appeared (kind: transcript, wav, link, skipped). title is the
+        exact YouTube title; text is a link's URL or a skipped video's reason."""
 
     def _ask(self, prompt: str) -> str:
         try:
@@ -770,6 +786,7 @@ class ConsoleUI:
 
 UI = ConsoleUI()
 STOP = threading.Event()  # set by the GUI's Stop button
+PAUSE = threading.Event()  # set by the GUI's Pause button
 
 
 def set_ui(ui) -> None:
@@ -788,6 +805,8 @@ def hint(cli: str, gui: str) -> str:
 
 def check_stop() -> None:
     """Raise the same clean stop as Ctrl+C when the GUI's Stop is pressed."""
+    while PAUSE.is_set() and not STOP.is_set():
+        time.sleep(0.2)
     if STOP.is_set():
         raise KeyboardInterrupt
 
@@ -871,9 +890,6 @@ class Manifest:
             out[r["status"]] = out.get(r["status"], 0) + 1
         return out
 
-    def last_batch(self) -> int:
-        nums = [int(r["batch"]) for r in self.rows.values() if r["batch"].isdigit()]
-        return max(nums, default=0)
 
 
 # =============================================================================
@@ -1354,7 +1370,6 @@ class SourceRun:
         self.audio_dir = self.folder / DIR_WORK / "audio"
         self.tmp_dir = self.folder / DIR_WORK / "tmp"
         self.budget = title_budget(self.folder.resolve())
-        self.batches: BatchAllocator | None = None
 
     # ----- metadata -----
 
@@ -1404,16 +1419,15 @@ class SourceRun:
             title = e.get("title") or (row or {}).get("title") or vid
             dur = e.get("duration") or ((row or {}).get("duration") or None)
             if title in ("[Private video]", "[Deleted video]"):
-                self.manifest.set(vid, title=title, type=vtype, status="skipped-private",
-                                  error="private or deleted")
+                self.skip(vid, "skipped-private", "private or deleted", title=title, type=vtype)
                 continue
             known_short = dur is not None and float(dur) < min_s
             if dur is None and vtype == "short" and min_s > SHORTS_MAX_S:
                 known_short = True  # every Short is under the limit; no need to fetch it
             if known_short:
                 if not row or row["status"] in ("", "pending", "skipped-short"):
-                    self.manifest.set(vid, title=title, type=vtype, duration=int(float(dur)) if dur else "",
-                                      status="skipped-short", error="")
+                    self.skip(vid, "skipped-short", title=title, type=vtype,
+                              duration=int(float(dur)) if dur else "")
                 short_n += 1
                 short_by_type[vtype] = short_by_type.get(vtype, 0) + 1
                 continue
@@ -1441,6 +1455,8 @@ class SourceRun:
         st = row["status"]
         if st in ("pending", "failed", "skipped-live", "skipped-short"):
             return True
+        if st == "no-captions":
+            return not self.args.no_wavs
         if st == "needs-signin":
             return bool(self.ctx.net.browser)
         if st == "skipped-non-english":
@@ -1459,24 +1475,35 @@ class SourceRun:
         kind = classify_error(msg)
         status = {"needs-signin": "needs-signin", "private": "skipped-private",
                   "unavailable": "skipped-private", "live": "skipped-live"}.get(kind, "failed")
-        self.manifest.set(vid, status=status, error=msg)
+        if status.startswith("skipped"):
+            self.skip(vid, status, error=msg)
+        else:
+            self.manifest.set(vid, status=status, error=msg)
         say(f"    {status}: {msg[:160]}")
         if kind == "bot-check":
             self.ctx.bot_streak += 1
         else:
             self.ctx.bot_streak = 0
 
-    def metadata_pass(self, todo: list[str]) -> list[str]:
+    def skip(self, vid: str, status: str, reason: str = "", error: str = "", **fields) -> None:
+        """Record a skipped video and show it in the window's Skipped list."""
+        self.manifest.set(vid, status=status, error=error, **fields)
+        row = self.manifest.get(vid)
+        reason = reason or skip_reason(status, self.args.min_minutes, error)
+        UI.item("skipped", self.folder, None, reason, row["title"])
+
+    def metadata_pass(self, todo: list[str], start: int = 0, total: int = 0) -> list[str]:
         """Fetch metadata for each video. Returns the IDs ready for content."""
         ready = []
         min_s = self.args.min_minutes * 60
-        for i, vid in enumerate(todo, 1):
+        total = total or len(todo)
+        for i, vid in enumerate(todo, start + 1):
             check_stop()
             if self.ctx.stop_all:
                 break
             row = self.manifest.get(vid)
-            UI.progress("Getting video details", i, len(todo))
-            say(f"  [{i}/{len(todo)}] metadata: {row['title'][:70]}")
+            UI.progress("Getting video details", i, total)
+            say(f"  [{i}/{total}] metadata: {row['title'][:70]}")
             try:
                 meta = self.fetch_meta(vid)
             except CookieError:
@@ -1497,16 +1524,16 @@ class SourceRun:
                 duration=int(meta["duration"]) if meta.get("duration") else row["duration"],
                 language=meta.get("language") or "", error="")
             if meta.get("live_status") in ("is_live", "is_upcoming", "post_live"):
-                self.manifest.set(vid, status="skipped-live", error=meta.get("live_status"))
+                self.skip(vid, "skipped-live", error=meta.get("live_status"))
             elif meta.get("duration") and meta["duration"] < min_s:
-                self.manifest.set(vid, status="skipped-short")
+                self.skip(vid, "skipped-short")
             else:
                 if self.manifest.get(vid)["status"] != "pending":
                     self.manifest.set(vid, status="pending")
                 ready.append(vid)
             r = self.manifest.get(vid)
-            if r["status"] not in ("skipped-short", "skipped-private"):
-                UI.item("link", self.folder, self.folder / "links.txt", link_line(r))
+            if not self.args.no_links and r["status"] not in ("skipped-short", "skipped-private"):
+                UI.item("link", self.folder, self.folder / "links.txt", watch_url(vid), r["title"])
             self.save()
         return ready
 
@@ -1524,14 +1551,15 @@ class SourceRun:
                      "Stopping for now. Wait an hour, then Slurp the same link again to carry on."))
             self.ctx.stop_all = True
 
-    def content_pass(self, ready: list[str]) -> None:
-        for i, vid in enumerate(ready, 1):
+    def content_pass(self, ready: list[str], start: int = 0, total: int = 0) -> None:
+        total = total or len(ready)
+        for i, vid in enumerate(ready, start + 1):
             check_stop()
             if self.ctx.stop_all:
                 break
             row = self.manifest.get(vid)
-            UI.progress("Making transcripts and WAVs", i, len(ready))
-            say(f"  [{i}/{len(ready)}] {row['title'][:70]}")
+            UI.progress("Making transcripts and WAVs", i, total)
+            say(f"  [{i}/{total}] {row['title'][:70]}")
             try:
                 self.process_content(vid)
             except (CookieError, Stop):
@@ -1552,6 +1580,10 @@ class SourceRun:
         channel = row["channel"] or self.src.name
 
         track = choose_caption_track(meta.get("subtitles"), meta.get("automatic_captions"), a.lang)
+        if track and a.no_transcripts:
+            self.skip(vid, "pending", error="transcripts turned off")
+            say("    has captions; transcripts are turned off")
+            return
         if track:
             kind, key, url, ext = track
             text = captions_to_text(self.ctx.net.fetch_text(url), ext, kind, a.timestamps)
@@ -1565,13 +1597,16 @@ class SourceRun:
                 write_atomic(out, f"{header}\n{text}\n")
                 self.manifest.set(vid, status="transcript", source=kind, error="")
                 say(f"    transcript ({kind} captions)")
-                UI.item("transcript", self.folder, out)
+                UI.item("transcript", self.folder, out, title=row["title"])
                 return
 
         if not is_english(meta.get("language")) and not a.include_non_english:
-            self.manifest.set(vid, status="skipped-non-english",
-                              error=f"no captions; language {meta.get('language')}")
+            self.skip(vid, "skipped-non-english", error=f"no captions; language {meta.get('language')}")
             say(f"    skipped-non-english ({meta.get('language')})")
+            return
+        if a.no_wavs:
+            self.skip(vid, "no-captions")
+            say("    no captions; WAVs are turned off")
             return
         self.make_wavs(vid, stem)
 
@@ -1603,11 +1638,7 @@ class SourceRun:
                 piece = self.tmp_dir / f"{vid}_{n:02d}.wav"
                 cut_wav(full, piece, s, e)
                 pieces.append(piece)
-        if self.batches is None:
-            self.batches = BatchAllocator(max(self.manifest.last_batch(), existing_batches(self.folder)),
-                                          a.batch_files)
-        batch = self.batches.add(parts)
-        dest_dir = self.folder / DIR_NEEDS / (batch_dir_name(batch) if batch else "")
+        dest_dir = self.folder / DIR_NEEDS
         dest_dir.mkdir(parents=True, exist_ok=True)
         (self.folder / DIR_WHISPER).mkdir(exist_ok=True)
         finals = []
@@ -1618,10 +1649,10 @@ class SourceRun:
         if full.exists():
             full.unlink()
         audio.unlink(missing_ok=True)
-        self.manifest.set(vid, status="wav", source="", wav_files=parts, batch=batch or "", error="")
+        self.manifest.set(vid, status="wav", source="", wav_files=parts, batch="", error="")
         say(f"    {parts} WAV file{'s' if parts > 1 else ''} in {dest_dir.relative_to(self.folder)}")
         for final in finals:
-            UI.item("wav", self.folder, final)
+            UI.item("wav", self.folder, final, title=self.manifest.get(vid)["title"])
 
     # ----- whole source -----
 
@@ -1635,29 +1666,35 @@ class SourceRun:
             if self.tmp_dir.exists():
                 shutil.rmtree(self.tmp_dir, ignore_errors=True)
             save_run(self.src, a)
+            migrate_names(self.folder)
             try:
                 todo = only if only is not None else self.select()
                 self.save()
                 say(f"  {len(todo)} videos to process.")
-                ready = self.metadata_pass(todo)
-                write_links(self.folder, self.manifest)
-                if not a.links_only:
-                    self.content_pass(ready)
+                for start in range(0, len(todo), ROUND_SIZE):
+                    chunk = todo[start:start + ROUND_SIZE]
+                    ready = self.metadata_pass(chunk, start, len(todo))
+                    if not a.links_only:
+                        self.content_pass(ready, start, len(todo))
+                    self.write_outputs()
+                    if self.ctx.stop_all:
+                        break
             finally:
                 self.save()
-                write_needs_list(self.folder, self.manifest)
+                self.write_outputs(combined=False)
+
+    def write_outputs(self, combined: bool = True) -> None:
+        """Bring links.txt, the WAV list and the combined files up to date."""
+        if not self.args.no_links:
+            write_links(self.folder, self.manifest)
+        write_needs_list(self.folder, self.manifest)
+        if combined and not self.args.links_only:
+            build_combined(self.folder, self.args.chunk_words, self.args.max_sources,
+                           self.args.max_source_words, self.manifest)
 
     def save(self) -> None:
         self.manifest.save()
         UI.counts(self.folder, self.manifest.counts())
-
-
-def existing_batches(folder: Path) -> int:
-    needs = folder / DIR_NEEDS
-    if not needs.is_dir():
-        return 0
-    nums = [int(m.group(1)) for p in needs.iterdir() if (m := re.fullmatch(r"batch (\d+)", p.name))]
-    return max(nums, default=0)
 
 
 def save_run(src: Source, args) -> None:
@@ -1671,14 +1708,32 @@ def save_run(src: Source, args) -> None:
     write_atomic(src.folder / "run.json", json.dumps(run, indent=2))
 
 
-def link_line(r: dict) -> str:
-    return f"{iso_date(r['upload_date'])} | {fmt_duration(r['duration'])} | {r['title']} | {watch_url(r['id'])}"
+def migrate_names(folder: Path) -> None:
+    """Bring folders made by earlier versions up to date: title-first names, and
+    WAVs moved out of the old batch folders."""
+    needs = folder / DIR_NEEDS
+    if needs.is_dir():
+        for sub in [p for p in needs.iterdir() if p.is_dir() and re.fullmatch(r"batch \d+", p.name)]:
+            for f in sub.iterdir():
+                if not (needs / f.name).exists():
+                    os.replace(f, needs / f.name)
+            try:
+                sub.rmdir()
+            except OSError:
+                pass
+    for d in (folder / DIR_TRANSCRIPTS, needs):
+        if d.is_dir():
+            for f in d.iterdir():
+                new = new_style_name(f.name)
+                if f.is_file() and new and not (d / new).exists():
+                    os.replace(f, d / new)
 
 
 def write_links(folder: Path, manifest: Manifest) -> None:
+    """links.txt: one URL per line, nothing else, in upload-date order."""
     rows = [r for r in manifest.rows.values() if r["status"] not in ("skipped-short", "skipped-private")]
     rows.sort(key=lambda r: (r["upload_date"] or "99999999", r["id"]))
-    lines = [link_line(r) for r in rows]
+    lines = [watch_url(r["id"]) for r in rows]
     write_atomic(folder / "links.txt", "\n".join(lines) + ("\n" if lines else ""))
 
 
@@ -1686,15 +1741,15 @@ def write_needs_list(folder: Path, manifest: Manifest) -> None:
     rows = [r for r in manifest.rows.values() if r["status"] in ("wav", "merged") and r["wav_files"]]
     if not rows and not (folder / "needs-transcription.txt").exists():
         return
-    rows.sort(key=lambda r: (int(r["batch"] or 0), r["upload_date"], r["id"]))
+    rows.sort(key=lambda r: (r["upload_date"], r["id"]))
     lines = ["Videos without captions, as WAV files for the Whisper app.",
              f"Save each transcript into {DIR_WHISPER}/. The yt-slurp window merges them by itself",
              f"(or run: yt-slurp merge \"{folder}\").",
              "",
-             "Batch | ID | WAV files | Status | Title"]
+             "Title | ID | WAV files | Status"]
     for r in rows:
-        status = "merged" if r["status"] == "merged" else "pending"
-        lines.append(f"{r['batch'] or '-'} | {r['id']} | {r['wav_files']} | {status} | {r['title']}")
+        status = "merged" if r["status"] == "merged" else "waiting for Whisper"
+        lines.append(f"{r['title']} | {r['id']} | {r['wav_files']} | {status}")
     write_atomic(folder / "needs-transcription.txt", "\n".join(lines) + "\n")
 
 
@@ -1702,10 +1757,13 @@ def write_needs_list(folder: Path, manifest: Manifest) -> None:
 # Combined files
 # =============================================================================
 
-def build_combined(folder: Path, chunk_words: int, max_sources: int, max_source_words: int) -> dict:
-    """Rebuild claude-parts/ and gemini-notebook/ from transcripts/."""
+def build_combined(folder: Path, chunk_words: int, max_sources: int, max_source_words: int,
+                   manifest: Manifest | None = None) -> dict:
+    """Rebuild claude-parts/ and gemini-notebook/ from transcripts/, in upload-date order."""
     tdir = folder / DIR_TRANSCRIPTS
-    files = sorted(tdir.glob("*.txt")) if tdir.is_dir() else []
+    if manifest is None and (folder / "manifest.csv").exists():
+        manifest = Manifest(folder / "manifest.csv")
+    files = sorted(tdir.glob("*.txt"), key=lambda p: transcript_sort_key(p.name, manifest)) if tdir.is_dir() else []
     texts = [read_text(p).strip() for p in files]
     name = folder.name
     for d in (DIR_CLAUDE, DIR_GEMINI):
@@ -1735,7 +1793,7 @@ def build_combined(folder: Path, chunk_words: int, max_sources: int, max_source_
     per_video = all(len(g) == 1 for g in ggroups) and len(items) == len(files)
     for n, g in enumerate(ggroups, 1):
         if per_video:
-            fname = f"{n:03d} {item_files[g[0]].name}"
+            fname = item_files[g[0]].name
         else:
             first = file_date(item_files[g[0]].name)
             last = file_date(item_files[g[-1]].name)
@@ -1746,8 +1804,16 @@ def build_combined(folder: Path, chunk_words: int, max_sources: int, max_source_
 
 
 def file_date(name: str) -> str:
-    m = re.match(r"\d{4}-\d{2}-\d{2}", name)
+    m = re.search(r"\d{4}-\d{2}-\d{2}", name)
     return m.group(0) if m else "undated"
+
+
+def transcript_sort_key(name: str, manifest: Manifest | None) -> tuple:
+    """Upload date from the manifest (or the filename), then the name."""
+    m = _ID_RE.search(name)
+    row = manifest.get(m.group(1)) if (manifest and m) else None
+    date = iso_date(row["upload_date"]) if row and row["upload_date"] else file_date(name)
+    return (date if date != "undated" else "9999", name.lower())
 
 
 def report_combined(stats: dict, args) -> None:
@@ -1795,6 +1861,7 @@ def mergeable_ids(folder: Path) -> list[str]:
 
 
 def _merge(folder: Path, args) -> None:
+    migrate_names(folder)
     manifest_path = folder / "manifest.csv"
     if not manifest_path.exists():
         raise Stop(f"No manifest.csv in {folder}. Give the folder that yt-slurp created for the channel or playlist.")
@@ -1835,7 +1902,7 @@ def _merge(folder: Path, args) -> None:
         write_atomic(out, f"{header}\n{body.strip()}\n")
         manifest.set(vid, status="merged", source="whisper", error="")
         merged.append(row)
-        UI.item("transcript", folder, out)
+        UI.item("transcript", folder, out, title=title)
         if args.delete_wavs:
             for wav in find_by_id(folder / DIR_NEEDS, vid, ".wav"):
                 wav.unlink()
@@ -1873,7 +1940,7 @@ def smoke_wav(folder: Path) -> None:
     Whisper app's save dialog before a large batch."""
     folder.mkdir(parents=True, exist_ok=True)
     (folder / DIR_WHISPER).mkdir(exist_ok=True)
-    dest_dir = folder / DIR_NEEDS / batch_dir_name(1)
+    dest_dir = folder / DIR_NEEDS
     dest_dir.mkdir(parents=True, exist_ok=True)
     today = datetime.date.today().strftime("%Y%m%d")
     title = "yt-slurp smoke test"
@@ -1897,7 +1964,7 @@ def smoke_wav(folder: Path) -> None:
     shutil.rmtree(tmp, ignore_errors=True)
     manifest = Manifest(folder / "manifest.csv")
     manifest.set(SMOKE_ID, title=title, channel="yt-slurp", upload_date=today, duration=10,
-                 type="video", status="wav", wav_files=2, batch=1)
+                 type="video", status="wav", wav_files=2)
     manifest.save()
     write_atomic(folder / "run.json", json.dumps({"name": "yt-slurp smoke test", "kind": "smoke"}, indent=2))
     write_needs_list(folder, manifest)
@@ -1991,17 +2058,15 @@ def summarise(run: SourceRun, combined: dict) -> None:
     waiting = [r for r in m.rows.values() if r["status"] == "wav"]
     if waiting:
         nfiles = sum(int(r["wav_files"] or 0) for r in waiting)
-        batches = sorted({int(r["batch"]) for r in waiting if r["batch"].isdigit()})
-        say(f"  Next: {nfiles} WAV files for {len(waiting)} videos"
-            + (f" in batches {', '.join(f'{b:02d}' for b in batches)}" if batches else "") + ".")
+        say(f"  Next: {nfiles} WAV files for {len(waiting)} videos.")
         if getattr(UI, "gui", False):
             say("    1. Click Open WAV folder and Launch Whisper app, then drag the WAVs into the app.")
             say(f"    2. Click Save as .txt for each into {run.folder.resolve() / DIR_WHISPER} before closing the app.")
             say("    3. yt-slurp merges them by itself as soon as all of a video's parts are saved.")
         else:
-            say(f"    1. Drag one batch folder's WAVs from {run.folder.resolve() / DIR_NEEDS} into the Whisper app.")
+            say(f"    1. Drag the WAVs from {run.folder.resolve() / DIR_NEEDS} into the Whisper app, a few at a time.")
             say(f"    2. Click Save as .txt for each into {run.folder.resolve() / DIR_WHISPER} before closing the app.")
-            say(f"    3. Repeat per batch, then run: yt-slurp merge \"{run.folder.resolve()}\"")
+            say(f"    3. When they are saved, run: yt-slurp merge \"{run.folder.resolve()}\"")
     risky = [r for r in waiting if not r["language"] and non_ascii_share(r["title"]) > 0.5]
     for r in risky:
         say(f"  Check the language (no language in metadata): {r['title']} [{r['id']}]")
@@ -2044,8 +2109,11 @@ def build_run_parser() -> argparse.ArgumentParser:
     p.add_argument("--wav-rate", type=int, default=DEFAULT_WAV_RATE, help="WAV sample rate (default 16000)")
     p.add_argument("--chunk-minutes", type=float, default=DEFAULT_CHUNK_MINUTES,
                    help="split audio longer than this; 0 disables (default 60)")
-    p.add_argument("--batch-files", type=int, default=DEFAULT_BATCH_FILES,
-                   help="WAV files per batch folder; 0 disables (default 10)")
+    p.add_argument("--no-transcripts", action="store_true", help="don't make transcripts from captions")
+    p.add_argument("--no-wavs", action="store_true", help="don't make WAVs for videos without captions")
+    p.add_argument("--no-links", action="store_true", help="don't write links.txt")
+    p.add_argument("--pace", choices=list(PACES), default="normal",
+                   help="wait between requests: normal 2-5 s, slow 5-10 s, very-slow 10-20 s")
     p.add_argument("--cookies-from-browser", choices=[*BROWSERS, "none"],
                    help="browser for retrying sign-in videos, or none")
     p.add_argument("--limit", type=int, help="process only the first N videos")
@@ -2070,8 +2138,18 @@ def read_url_file(path: str) -> list[str]:
     return [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
 
 
+def normalise_make_options(args) -> None:
+    """--links-only means no transcripts and no WAVs; with both off, a run only lists links."""
+    if args.links_only:
+        args.no_transcripts = args.no_wavs = True
+    args.links_only = args.no_transcripts and args.no_wavs
+
+
 def cmd_run(argv: list[str]) -> None:
     args = build_run_parser().parse_args(argv)
+    normalise_make_options(args)
+    global DELAY_RANGE_S
+    DELAY_RANGE_S = PACES[args.pace]
     if bool(args.url) == bool(args.file):
         raise Stop("Give one channel or playlist URL, or --file urls.txt.")
     preflight()

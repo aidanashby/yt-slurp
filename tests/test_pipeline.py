@@ -93,13 +93,13 @@ def test_full_pipeline(fake, monkeypatch):
 
     transcript = next((folder / "transcripts").iterdir())
     text = transcript.read_text(encoding="utf-8")
-    assert transcript.name == "2024-01-02 Has Captions [capt0000001].txt"
+    assert transcript.name == "Has Captions [capt0000001] 2024-01-02.txt"
     assert "Title: Has Captions" in text and text.rstrip().endswith("hello everyone this is a test")
 
-    wavs = sorted(p.name for p in (folder / "needs-transcription" / "batch 01").iterdir())
-    assert wavs == ["2024-01-03 No Captions Long [nocap000002] part 01 of 02.wav",
-                    "2024-01-03 No Captions Long [nocap000002] part 02 of 02.wav"]
-    part1 = folder / "needs-transcription" / "batch 01" / wavs[0]
+    wavs = sorted(p.name for p in (folder / "needs-transcription").iterdir())
+    assert wavs == ["No Captions Long [nocap000002] 2024-01-03 part 01 of 02.wav",
+                    "No Captions Long [nocap000002] 2024-01-03 part 02 of 02.wav"]
+    part1 = folder / "needs-transcription" / wavs[0]
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=sample_rate,channels,codec_name",
                             "-of", "json", str(part1)], capture_output=True, text=True)
     stream = json.loads(probe.stdout)["streams"][0]
@@ -108,7 +108,8 @@ def test_full_pipeline(fake, monkeypatch):
     assert not list((folder / ".work" / "audio").iterdir())
 
     links = (folder / "links.txt").read_text(encoding="utf-8").splitlines()
-    assert links[0].startswith("2024-01-02 | 10:00 | Has Captions | https://www.youtube.com/watch?v=capt0000001")
+    assert links[0] == "https://www.youtube.com/watch?v=capt0000001"
+    assert all(line.startswith("https://www.youtube.com/watch?v=") for line in links)
     assert "nocap000002 | 2 |" in (folder / "needs-transcription.txt").read_text(encoding="utf-8")
 
     # Whisper output saved by hand, then merge
@@ -120,10 +121,10 @@ def test_full_pipeline(fake, monkeypatch):
     (wt / "stray.txt").write_text("x", encoding="utf-8")
     assert ys.main(["merge", str(folder), "--delete-wavs"]) == 0
     assert ys.Manifest(folder / "manifest.csv").get("nocap000002")["status"] == "merged"
-    merged = (folder / "transcripts" / "2024-01-03 No Captions Long [nocap000002].txt").read_text(encoding="utf-8")
+    merged = (folder / "transcripts" / "No Captions Long [nocap000002] 2024-01-03.txt").read_text(encoding="utf-8")
     assert merged.endswith("First part.\n\nMore.\n\nSecond part.\n")
     assert "Transcript: Whisper" in merged
-    assert not list((folder / "needs-transcription" / "batch 01").iterdir())
+    assert not list((folder / "needs-transcription").glob("*.wav"))
     assert len(list((folder / "gemini-notebook").iterdir())) == 2
 
     # Update with cookies retries the members-only video
@@ -131,7 +132,7 @@ def test_full_pipeline(fake, monkeypatch):
     assert run("--update", "--cookies-from-browser", "firefox") == 0
     m = ys.Manifest(folder / "manifest.csv")
     assert m.get("members0004")["status"] == "wav"
-    assert m.get("members0004")["batch"] == "2"  # new batch, existing never reused
+    assert len(list((folder / "needs-transcription").glob("*members0004*.wav"))) == 2
     assert m.get("capt0000001")["status"] == "transcript"
 
 
@@ -152,3 +153,43 @@ def test_links_only_and_fresh_keeps_whisper(fake, monkeypatch):
 
 def test_single_video_rejected(fake):
     assert ys.main(["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]) == 2
+
+
+def test_no_wavs_records_no_captions_and_pace(fake, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt="": "none")
+    assert run("--no-wavs", "--pace", "slow") == 0
+    assert ys.DELAY_RANGE_S == ys.PACES["slow"]
+    m = ys.Manifest(fake / "output" / "Test Channel" / "manifest.csv")
+    assert m.get("nocap000002")["status"] == "no-captions"
+    assert not (fake / "output" / "Test Channel" / "needs-transcription").exists()
+    # Turning WAVs back on picks it up.
+    assert run("--update") == 0
+    assert ys.Manifest(fake / "output" / "Test Channel" / "manifest.csv").get("nocap000002")["status"] == "wav"
+    ys.DELAY_RANGE_S = ys.PACES["normal"]
+
+
+def test_outputs_rewritten_each_round(fake, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt="": "none")
+    monkeypatch.setattr(ys, "ROUND_SIZE", 2)
+    seen = []
+    real = ys.build_combined
+
+    def spy(folder, *a, **k):
+        seen.append(len(list((folder / "transcripts").glob("*.txt"))) if (folder / "transcripts").exists() else 0)
+        return real(folder, *a, **k)
+
+    monkeypatch.setattr(ys, "build_combined", spy)
+    assert run() == 0
+    assert len(seen) >= 2  # rewritten after each round, not only at the end
+
+
+def test_migrate_names_from_older_versions(tmp_path):
+    needs = tmp_path / "needs-transcription" / "batch 01"
+    needs.mkdir(parents=True)
+    (needs / "2024-01-03 Talk [nocap000002] part 01 of 02.wav").write_bytes(b"x")
+    (tmp_path / "transcripts").mkdir()
+    (tmp_path / "transcripts" / "2024-01-02 Other [capt0000001].txt").write_text("t", encoding="utf-8")
+    ys.migrate_names(tmp_path)
+    assert (tmp_path / "needs-transcription" / "Talk [nocap000002] 2024-01-03 part 01 of 02.wav").exists()
+    assert not (tmp_path / "needs-transcription" / "batch 01").exists()
+    assert (tmp_path / "transcripts" / "Other [capt0000001] 2024-01-02.txt").exists()

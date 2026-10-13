@@ -1,6 +1,6 @@
 # yt-slurp: status
 
-Last updated: 13th October 2026
+Last updated: 13th October 2026 (window, round 2)
 
 ## Where it is
 
@@ -16,28 +16,33 @@ yt-slurp now has a window and a one-click installer. Double-click `yt-slurp.bat`
   - creates the `.venv` environment, and repairs it if broken;
   - installs the libraries only when they have changed, and updates yt-dlp weekly;
   - opens the window with no console left behind.
-- **`yt_slurp_gui.py`** (the window, Tkinter):
-  - a link box with Slurp and Stop buttons, the option to use a file of links, and a list of channels you've done before;
-  - plain-English settings on the left, saved between sessions;
-  - an output panel that shows transcripts, WAV files or links as they are made, with a preview of the selected file;
-  - progress bar, status counts and messages;
+- **`yt_slurp_gui.py`** (the window, Tkinter, styled after the Whisper Transcriber app, with a red tongue icon):
+  - a link box with a Slurp split button (the arrow does just normal videos, just Shorts or just live streams), Pause/Resume and Stop, the option to use a file of links, and a list of channels you've done before;
+  - one output list for transcripts, WAVs, links and skipped videos, colour-coded, filtered by chips (all on by default) and by a name filter; names are the exact YouTube title, with any extra (part number, skip reason) at the end; the list only follows new items when you're already at the bottom;
+  - a content pane with in-file search, highlighting, and previous/next match;
+  - a settings window (gear button, or Tools, Settings) covering which videos, what to make (transcripts, WAVs, links), caption language, timestamps, WAV options, pace, folders, the Whisper app and advanced limits;
   - buttons for the results, WAV, Claude and Gemini folders, and to launch (or bring forward) the Whisper app;
-  - questions as pop-up dialogs;
+  - a one-line status bar that opens the full log;
   - automatic merging of Whisper text as soon as a video's parts are all saved;
-  - a Tools menu with the filename smoke test, merge now, open manifest and self-test.
+  - a Tools menu with settings, the filename smoke test, rebuild Claude and Gemini files, open manifest, the log, and the self-test.
 - **`yt_slurp.py`** (the pipeline):
-  - channel and playlist listing, duration filter, `links.txt` and `manifest.csv`;
+  - channel and playlist listing, duration filter, `links.txt` (URLs only) and `manifest.csv`;
+  - work in rounds of 10 videos, rewriting links and the combined files after each round;
+  - title-first filenames (`Title [id] date`), with older date-first folders renamed on the next run;
   - captions to clean text;
-  - WAVs for videos without captions, split at silence, in batch folders;
+  - WAVs for videos without captions, split at silence, all in `needs-transcription`;
+  - options to leave out transcripts, WAVs or links, and three crawl paces;
   - merge, and the Claude and Gemini Notebook combined files;
   - update and fresh re-runs, cookie retry, bot-check pause, a run lock per folder, and a clean stop.
   The command line (`yt-slurp ...`) still works.
-- **Tests:** 66 pytest tests, covering the pure functions, an offline end-to-end run, and the window driving a run and an automatic merge.
+- **Tests:** 77 pytest tests, covering the pure functions, offline end-to-end runs, and the window driving a run, chips, filters, search, auto-scroll, Pause/Resume, settings and an automatic merge.
 
 ## Decisions taken
 
 - yt-slurp does not run Whisper. Your Whisper transcriber app (local or remote) transcribes the WAVs; you save each result into `whisper-transcripts`, and yt-slurp merges it.
-- WAVs go in batch folders of 10, because the app loses unsaved results when it closes.
+- WAVs all go in one folder, `needs-transcription`. Batch folders were dropped.
+- Filenames put the title first, then the ID and upload date. The Claude and Gemini files stay in upload-date order, taken from the manifest.
+- Skipped videos show in the window with the reason: shorter than the minimum, not in English with no captions, private or deleted, live stream not finished, or turned off in settings.
 - Audio over 60 minutes is split into equal parts no longer than the limit, each cut at the nearest silence within two minutes.
 - "Start again" keeps `whisper-transcripts`.
 - Auto-captions are used only in the video's original language; machine translations are ignored.
@@ -49,7 +54,7 @@ yt-slurp now has a window and a one-click installer. Double-click `yt-slurp.bat`
 
 - `yt-slurp.bat` itself. It is written for Windows `cmd` and cannot run in the build container.
 - Any live YouTube request.
-- Whether the Whisper app's save dialog keeps the `[ID]` brackets (use the smoke test before any real batch).
+- Whether the Whisper app's save dialog keeps the `[ID]` brackets (use the smoke test before the first real WAVs).
 - Reading browser cookies, and the Launch Whisper app button.
 
 ## Next: first run on your laptop
@@ -81,11 +86,11 @@ Next time, double-clicking just opens the window within a few seconds.
 
 ### 3. Set up the window once
 
-1. Under **Whisper app** on the left, click **Choose the Whisper app...** and pick the file you use to start it (its .exe, .bat, .py or shortcut).
-2. Check **Its window title contains** matches a word in the Whisper app's title bar (default `Whisper`). yt-slurp uses this to bring the app forward instead of starting a second copy.
+1. Click the gear (**Settings**) at the top right. Under **Whisper app**, click **Choose the Whisper app...** and pick the file you use to start it (its .exe, .bat, .py or shortcut).
+2. Check **Its window title contains** matches a word in the Whisper app's title bar (default `Whisper`). yt-slurp uses this to bring the app forward instead of starting a second copy. Click **Save**.
 3. Tools menu, **Run the self-test**. It should say "Self-test passed".
 
-### 4. Smoke test (before any real batch)
+### 4. Smoke test (before the first real WAVs)
 
 1. Tools menu, **Check the Whisper app keeps filenames**. Two short test WAVs are made and their folder opens.
 2. Click **Launch Whisper app**, and drag both WAVs into it. Transcribe them.
@@ -94,12 +99,12 @@ Next time, double-clicking just opens the window within a few seconds.
 
 ### 5. Live tests
 
-In the settings, tick **Test run: only do the first few videos** (5 is fine) for these.
+In Settings, tick **Test run: only do the first few videos** (5 is fine) for these.
 
-1. **A small channel.** Paste its link (for example `https://www.youtube.com/@SomeChannel`) and click **Slurp**. Answer the question about which kinds of video. Watch transcripts appear on the right; click one to read it. Choose **Links** above the list to see the links.
+1. **A small channel.** Paste its link (for example `https://www.youtube.com/@SomeChannel`) and click **Slurp**. Answer the question about which kinds of video. Watch results appear in the list on the left, colour-coded; click one to read it on the right. Click the chips above the list to hide or show links, skipped videos, transcripts or WAVs. Try **Pause** and **Resume**.
 2. **A playlist.** Paste the playlist link and click **Slurp**.
-3. **A long video with no captions** (over 60 minutes). yt-slurp works on channels and playlists, so put the video in a playlist of its own (it can be unlisted) and slurp that. Choose **WAV files** above the list; there should be two or more parts. Click **Open WAV folder** and **Launch Whisper app**, transcribe the parts, and save each into `whisper-transcripts`. When all parts are saved, the merged transcript appears under Transcripts by itself.
-4. **A non-English video with no English captions**, in a playlist the same way. It should be counted as skipped.
+3. **A long video with no captions** (over 60 minutes). yt-slurp works on channels and playlists, so put the video in a playlist of its own (it can be unlisted) and slurp that. There should be two or more WAV parts in the list (blue). Click **Open WAV folder** and **Launch Whisper app**, transcribe the parts, and save each into `whisper-transcripts`. When all parts are saved, the merged transcript appears in the list by itself.
+4. **A non-English video with no English captions**, in a playlist the same way. It should appear under Skipped with the reason "not in English, no captions".
 5. **Optional: a members-only or age-restricted video.** At the end of the run, yt-slurp asks which browser to use. Sign in to YouTube in Firefox first, then choose Firefox.
 
 ### 6. What to send Claude
