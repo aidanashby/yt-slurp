@@ -191,7 +191,7 @@ Use `--limit 5` so each run takes a few minutes. Results go to `output\<channel 
 
 | What you see | What to do |
 |---|---|
-| `ffmpeg and ffprobe not found` | ffmpeg is in `C:\\ffmpeg\\bin`. Check that folder is still on the PATH, or run `winget install Gyan.FFmpeg` and open a new window. |
+| `ffmpeg and ffprobe not found` | ffmpeg is in `C:\ffmpeg\bin`. Check that folder is still on the PATH, or run `winget install Gyan.FFmpeg` and open a new window. |
 | A message about a JavaScript runtime | Run `winget install DenoLand.Deno`, then open a new window. |
 | `running scripts is disabled` | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` and type `Y`. |
 | `yt-slurp is not recognized` | The environment is off. Run `.venv\Scripts\Activate.ps1`. |
