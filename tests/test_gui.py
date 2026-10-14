@@ -21,6 +21,8 @@ def app(monkeypatch, tmp_path):
     monkeypatch.setattr(ys, "Net", FakeNet)
     monkeypatch.setattr(ys, "preflight", lambda: None)
     monkeypatch.setattr(gui, "open_path", lambda p: None)
+    monkeypatch.setattr(gui.setup, "missing_tools", lambda: [])
+    monkeypatch.setattr(gui.setup, "check_for_update", lambda current: None)
     monkeypatch.setattr(gui.ChoiceDialog, "__init__",
                         lambda self, parent, q, opts: setattr(self, "result", "none"))
     gui.save_settings({**gui.DEFAULT_SETTINGS, "welcomed": True, "output": str(tmp_path / "out"),
@@ -225,3 +227,27 @@ def test_selected_survives_a_stale_row(app):
     app.tree.selection_set(app.tree.get_children()[-1])
     app.items = []  # the list changed underneath the selection
     assert app.selected() is None
+
+
+def test_update_button_appears_only_when_newer(app):
+    app.show_update(None, quiet=True)
+    assert not app.update_btn.winfo_ismapped()
+    app.show_update({"version": "9.9.9", "url": "u", "page": "p", "notes": ""}, quiet=True)
+    app.root.update()
+    assert app.update_btn.winfo_ismapped() and app.update_btn.text == "Update to 9.9.9"
+
+
+def test_progress_bar_still_while_waiting(app):
+    app.start(["--help"], "Starting...")
+    assert str(app.bar.cget("mode")) == "determinate"
+    pump(app, lambda: idle(app))
+
+
+def test_both_panes_show_a_scrollbar(app):
+    app.root.geometry("1000x700")
+    app.set_preview("line\n" * 500)
+    app.root.update()
+    bars = [w for w in (app.preview_text.master.winfo_children() + app.tree.master.winfo_children())
+            if w.winfo_class() == "TScrollbar"]
+    assert len(bars) == 2
+    assert all(b.winfo_ismapped() and b.winfo_width() >= 5 for b in bars)

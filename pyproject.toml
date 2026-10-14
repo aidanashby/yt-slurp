@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yt-slurp"
-version = "0.1.1"
+dynamic = ["version"]
 description = "Collect YouTube transcripts for a channel or playlist, for analysis with Claude or Gemini Notebook."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,7 +18,10 @@ dev = ["pytest"]
 yt-slurp = "yt_slurp:main"
 
 [tool.setuptools]
-py-modules = ["yt_slurp", "yt_slurp_gui"]
+py-modules = ["yt_slurp", "yt_slurp_gui", "yt_slurp_setup", "yt_slurp_app"]
+
+[tool.setuptools.dynamic]
+version = {attr = "yt_slurp.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -20,11 +20,23 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import yt_slurp as ys
+import yt_slurp_setup as setup
 
 APP_NAME = "yt-slurp"
 REPO_DIR = Path(__file__).resolve().parent
+RES_DIR = setup.resource_dir()  # icon files; inside the .exe when bundled
+
+
+def default_output() -> Path:
+    """Next to the code when run from source; in Documents for the .exe,
+    which may live anywhere (even Downloads)."""
+    if setup.frozen():
+        return Path.home() / "Documents" / "yt-slurp"
+    return REPO_DIR / "output"
+
 AUTO_MERGE_EVERY_MS = 5000
 POLL_MS = 100
+UPDATE_CHECK_DELAY_MS = 3000
 SEARCH_DELAY_MS = 150
 MAX_HIGHLIGHTS = 2000
 
@@ -40,6 +52,7 @@ SLATE, SLATE_DARK = "#5b6f7a", "#4a5c66"
 BLUE, BLUE_DARK = "#1565c0", "#0d47a1"
 RED, RED_DARK = "#c62828", "#b71c1c"
 FOCUS = "#111111"
+MENU_BG, MENU_HOVER = "#f7f7f7", "#e3e3e3"
 DISABLED = "#b9c3c8"
 BORDER_FINE = "#c4c4c4"
 SHADOW, SHADOW_SOFT = "#d9d9d9", "#e4e4e4"
@@ -94,13 +107,14 @@ DEFAULT_SETTINGS = {
     "include_non_english": False,
     "chunk_minutes": 60,
     "pace": "normal",
-    "output": str(REPO_DIR / "output"),
+    "output": str(default_output()),
     "whisper_path": "",
-    "whisper_title": "Whisper",
+    "whisper_title": "",
     "chunk_words": ys.DEFAULT_CHUNK_WORDS,
     "max_sources": ys.DEFAULT_MAX_SOURCES,
     "max_source_words": ys.DEFAULT_MAX_SOURCE_WORDS,
     "welcomed": False,
+    "check_updates": True,
 }
 
 
@@ -349,7 +363,7 @@ def wav_info(path: Path) -> str:
     size_mb = path.stat().st_size / 1_000_000
     return (f"{path.name}\n\nLength: {ys.fmt_duration(secs)}\nFormat: {rate} Hz, "
             f"{'mono' if ch == 1 else f'{ch} channels'}, 16-bit\nSize: {size_mb:.1f} MB\n\n"
-            f"Drag it into the Whisper app, then save the text into {ys.DIR_WHISPER}. "
+            f"Drag it into your transcription app, then save the text into {ys.DIR_WHISPER}. "
             "yt-slurp merges it by itself.")
 
 
@@ -641,6 +655,8 @@ class App:
         self.stage = "Ready."
         self.counts_text = ""
         self.matches: list[int] = []
+        self.closed = False
+        self.update_info = None
         self.match_i = -1
         ys.set_ui(GuiUI(self))
 
@@ -664,16 +680,19 @@ class App:
         root.after(AUTO_MERGE_EVERY_MS, self.auto_merge)
         if not self.settings["welcomed"]:
             root.after(300, self.welcome)
+        root.after(200, self.check_tools)
+        if self.settings.get("check_updates", True):
+            root.after(UPDATE_CHECK_DELAY_MS, lambda: self.check_updates(quiet=True))
 
     # ----- look -----
 
     def set_icon(self):
         self.icon_img = None
         try:
-            self.icon_img = tk.PhotoImage(file=str(REPO_DIR / "icon.png"))
+            self.icon_img = tk.PhotoImage(file=str(RES_DIR / "icon.png"))
             self.root.iconphoto(True, self.icon_img)
             if os.name == "nt":
-                self.root.iconbitmap(default=str(REPO_DIR / "icon.ico"))
+                self.root.iconbitmap(default=str(RES_DIR / "icon.ico"))
         except tk.TclError:
             pass
 
@@ -688,9 +707,9 @@ class App:
         s.layout("Slim.Vertical.TScrollbar", [
             ("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
                 ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-        s.configure("Slim.Vertical.TScrollbar", troughcolor=CARD, background="#c8c8c8", bordercolor=CARD,
-                    lightcolor="#c8c8c8", darkcolor="#c8c8c8", arrowsize=7, width=7, gripcount=0)
-        s.map("Slim.Vertical.TScrollbar", background=[("active", "#a8a8a8")])
+        s.configure("Slim.Vertical.TScrollbar", troughcolor=CARD, background="#949494", bordercolor=CARD,
+                    lightcolor="#949494", darkcolor="#949494", arrowsize=7, width=7, gripcount=0)
+        s.map("Slim.Vertical.TScrollbar", background=[("active", "#6f6f6f")])
         s.configure("TCombobox", fieldbackground=CARD, background=CARD, arrowcolor=SLATE, bordercolor=BORDER,
                     lightcolor=CARD, darkcolor=CARD, padding=4)
         s.map("TCombobox", fieldbackground=[("readonly", CARD)], selectbackground=[("readonly", CARD)],
@@ -709,20 +728,42 @@ class App:
     # ----- layout -----
 
     def build_menu(self):
-        bar = tk.Menu(self.root)
-        tools = tk.Menu(bar, tearoff=False)
-        tools.add_command(label="Check the Whisper app keeps filenames", command=self.smoke_test)
+        """A drawn menu bar, so it can hold the blue Update button (Windows'
+        own menu bar cannot be coloured)."""
+        bar = self.menu_bar = tk.Frame(self.root, bg=MENU_BG)
+        bar.pack(fill="x")
+        tools = tk.Menu(self.root, tearoff=False)
+        tools.add_command(label="Check the transcription app keeps filenames", command=self.smoke_test)
         tools.add_command(label="Rebuild Claude and Gemini files", command=self.rebuild_combined)
         tools.add_command(label="Open the manifest in Excel", command=self.open_manifest)
         tools.add_command(label="Show the full log", command=self.show_log)
-        tools.add_separator()
-        tools.add_command(label="Run the self-test", command=self.self_test)
-        bar.add_command(label="Settings", command=self.open_settings)
-        bar.add_cascade(label="Tools", menu=tools)
-        helpm = tk.Menu(bar, tearoff=False)
+        if not setup.frozen():
+            tools.add_separator()
+            tools.add_command(label="Run the self-test", command=self.self_test)
+        helpm = tk.Menu(self.root, tearoff=False)
         helpm.add_command(label="How to use yt-slurp", command=self.welcome)
-        bar.add_cascade(label="Help", menu=helpm)
-        self.root.config(menu=bar)
+        helpm.add_command(label="Check for updates", command=lambda: self.check_updates(quiet=False))
+        helpm.add_command(label=f"About yt-slurp {ys.__version__}", command=self.about)
+        self.menu_item(bar, "Settings", self.open_settings)
+        self.menu_item(bar, "Tools", lambda w: tools.tk_popup(w.winfo_rootx(), w.winfo_rooty() + w.winfo_height()),
+                       popup=True)
+        self.menu_item(bar, "Help", lambda w: helpm.tk_popup(w.winfo_rootx(), w.winfo_rooty() + w.winfo_height()),
+                       popup=True)
+        self.update_btn = RoundButton(bar, "Update", self.do_update, colour=BLUE, hover=BLUE_DARK, height=24,
+                                      font=(FONT, 9, "bold"), bg=MENU_BG)
+        tk.Frame(bar, bg=BORDER, height=1).place(relx=0, rely=1, relwidth=1, anchor="sw")
+
+    def menu_item(self, bar, text, command, popup=False):
+        lab = tk.Label(bar, text=text, bg=MENU_BG, fg=TEXT, font=(FONT, 10), padx=10, pady=4, cursor="hand2",
+                       takefocus=1, highlightthickness=1, highlightbackground=MENU_BG, highlightcolor=FOCUS)
+        lab.pack(side="left")
+        run = (lambda e=None: command(lab)) if popup else (lambda e=None: command())
+        lab.bind("<Button-1>", run)
+        for key in ("<Return>", "<space>", "<Down>"):
+            lab.bind(key, run)
+        lab.bind("<Enter>", lambda e: lab.configure(bg=MENU_HOVER))
+        lab.bind("<Leave>", lambda e: lab.configure(bg=MENU_BG))
+        return lab
 
     def build_top(self):
         top = card(self.root)
@@ -791,8 +832,8 @@ class App:
             self.tree.tag_configure(kind, foreground=colour)
         sb = ttk.Scrollbar(listf, orient="vertical", command=self.tree.yview, style="Slim.Vertical.TScrollbar")
         self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", self.preview)
         self.tree.bind("<Double-1>", self.open_selected)
         panes.add(left, minsize=320, width=520)
@@ -813,7 +854,7 @@ class App:
         self.match_label.pack(side="left")
         textf = tk.Frame(right, bg=CARD)
         textf.pack(fill="both", expand=True, padx=(10, 4), pady=(0, 10))
-        self.preview_text = tk.Text(textf, wrap="word", font=(FONT, 10), padx=10, pady=8, state="disabled",
+        self.preview_text = tk.Text(textf, wrap="word", width=20, font=(FONT, 10), padx=10, pady=8, state="disabled",
                                     relief="flat", bg=CARD, fg=TEXT, highlightthickness=0,
                                     selectbackground="#bbdefb")
         self.preview_text.tag_configure("match", background=MATCH_BG)
@@ -822,8 +863,8 @@ class App:
         psb = ttk.Scrollbar(textf, orient="vertical", command=self.preview_text.yview,
                             style="Slim.Vertical.TScrollbar")
         self.preview_text.configure(yscrollcommand=psb.set)
+        psb.pack(side="right", fill="y")  # pack the bar first, or the wide text squeezes it out
         self.preview_text.pack(side="left", fill="both", expand=True)
-        psb.pack(side="right", fill="y")
         self.empty_hint = tk.Label(right, text="Select a file from the list to see it here.", bg=CARD, fg=MUTED,
                                    font=(FONT, 10))
         self.empty_hint.place(relx=0.5, rely=0.5, anchor="center")
@@ -843,7 +884,7 @@ class App:
         for text, cmd, colour, hover in (
                 ("Open results folder", self.open_results, SLATE, SLATE_DARK),
                 ("Open WAV folder", self.open_wavs, SLATE, SLATE_DARK),
-                ("Launch Whisper app", self.launch_whisper, BLUE, BLUE_DARK),
+                ("Launch transcription app", self.launch_whisper, BLUE, BLUE_DARK),
                 ("Open Claude files", lambda: self.open_sub(ys.DIR_CLAUDE), SLATE, SLATE_DARK),
                 ("Open Gemini files", lambda: self.open_sub(ys.DIR_GEMINI), SLATE, SLATE_DARK)):
             RoundButton(btns, text, cmd, colour=colour, hover=hover).pack(side="left", padx=(0, 8))
@@ -1066,7 +1107,7 @@ class App:
             webbrowser.open(it["text"])
 
     def show_counts(self, counts):
-        names = (("transcript", "transcripts"), ("merged", "merged"), ("wav", "waiting for Whisper"),
+        names = (("transcript", "transcripts"), ("merged", "merged"), ("wav", "waiting for transcription"),
                  ("pending", "to do"), ("no-captions", "no captions"), ("needs-signin", "need sign-in"),
                  ("failed", "failed"))
         parts = [f"{label} {counts[k]}" for k, label in names if counts.get(k)]
@@ -1092,8 +1133,9 @@ class App:
         self.stop_btn.set_enabled(True)
         self.stage = label
         self.update_status()
-        self.bar.configure(mode="indeterminate")
-        self.bar.start(15)
+        # No moving bar until there is real progress to show: an animated bar
+        # while a question waits for an answer looks like it's doing something.
+        self.bar.configure(mode="determinate", value=0)
 
         def work():
             code = ys.run_command(argv)
@@ -1137,13 +1179,10 @@ class App:
             ys.PAUSE.clear()
             self.pause_btn.set_text("Pause")
             self.stage = "Carrying on..."
-            self.bar.configure(mode="indeterminate")
-            self.bar.start(15)
         else:
             ys.PAUSE.set()
             self.pause_btn.set_text("Resume")
             self.stage = "Paused. Click Resume to carry on."
-            self.bar.stop()
         self.update_status()
 
     def stop(self):
@@ -1155,7 +1194,6 @@ class App:
 
     def finished(self, code, after):
         ys.PAUSE.clear()
-        self.bar.stop()
         self.bar.configure(mode="determinate", value=0)
         self.slurp_btn.set_enabled(True)
         self.pause_btn.set_text("Pause")
@@ -1172,10 +1210,12 @@ class App:
 
     def poll(self):
         try:
-            while True:
+            while not self.closed:
                 self.handle(self.events.get_nowait())
         except queue.Empty:
             pass
+        if self.closed:
+            return
         if self.instance.raise_wanted():
             self.root.deiconify()
             self.root.lift()
@@ -1189,7 +1229,6 @@ class App:
         elif kind == "progress":
             _, stage, done, total = msg
             if not ys.PAUSE.is_set():
-                self.bar.stop()
                 self.bar.configure(mode="determinate", maximum=max(total, 1), value=done)
                 self.stage = f"{stage}: {done} of {total}"
                 self.update_status()
@@ -1204,16 +1243,43 @@ class App:
             self.add_item(ikind, folder, path, text, title)
             if self.smoke_waiting and ikind == "transcript" and folder.name == "smoke-test":
                 self.smoke_waiting = False
-                messagebox.showinfo(APP_NAME, "Test passed. The Whisper app kept the filenames, and the "
+                messagebox.showinfo(APP_NAME, "Test passed. The transcription app kept the filenames, and the "
                                               "two parts were merged into one transcript.")
         elif kind == "ask":
             _, akind, data, reply = msg
+            before = self.stage
+            self.stage = "Waiting for your answer..."
+            self.update_status()
             try:
                 reply["value"] = self.answer(akind, data)
             finally:
                 reply["event"].set()
+                self.stage = before
+                self.update_status()
         elif kind == "done":
             self.finished(msg[1], msg[2])
+        elif kind == "setup":
+            _, label, done, total = msg
+            self.bar.configure(mode="determinate", maximum=max(total, 1), value=done)
+            mb = f"{done / 1e6:.0f} of {total / 1e6:.0f} MB" if total else f"{done / 1e6:.0f} MB"
+            self.stage = f"{label}: {mb}"
+            self.update_status()
+        elif kind == "setup_done":
+            self.bar.configure(value=0)
+            self.slurp_btn.set_enabled(True)
+            self.update_btn.set_enabled(True)
+            if msg[1]:
+                self.stage = "Setup did not finish."
+                messagebox.showerror(APP_NAME, f"{msg[1]}\n\nCheck your internet connection and restart "
+                                               "yt-slurp to try again.")
+            else:
+                self.stage = "Ready."
+            self.update_status()
+        elif kind == "updated":
+            setup.restart(msg[1])
+            self.on_close()
+        elif kind == "update":
+            self.show_update(msg[1], msg[2])
 
     def answer(self, akind, data):
         if akind == "choose":
@@ -1232,8 +1298,8 @@ class App:
             if not self.busy():
                 for _, folder, _ in self.sources():
                     if ys.mergeable_ids(folder):
-                        self.write_log(f"\nWhisper text found for {folder.name}. Merging...")
-                        self.start(["merge", str(folder)] + self.combined_args(), "Merging Whisper text...")
+                        self.write_log(f"\nTranscripts found for {folder.name}. Merging...")
+                        self.start(["merge", str(folder)] + self.combined_args(), "Merging transcripts...")
                         break
         except Exception as e:  # never let a background check kill the window
             self.write_log(f"(Automatic merge check failed: {e})")
@@ -1275,18 +1341,21 @@ class App:
             return
         target = folder / ys.DIR_NEEDS
         if not target.is_dir() or not any(target.glob("*.wav")):
-            messagebox.showinfo(APP_NAME, "No WAV files are waiting for the Whisper app in this folder.")
+            messagebox.showinfo(APP_NAME, "No WAV files are waiting for transcription in this folder.")
             return
         open_path(target)
 
     def launch_whisper(self):
         s = self.settings
-        hwnd = find_window(s["whisper_title"])
+        # Find an open copy by a word in its window title (default: the
+        # program's filename), so a second copy isn't started.
+        title = s["whisper_title"] or (Path(s["whisper_path"]).stem if s["whisper_path"] else "")
+        hwnd = find_window(title)
         if hwnd:
             bring_to_front(hwnd)
             return
         if not s["whisper_path"] or not Path(s["whisper_path"]).exists():
-            messagebox.showinfo(APP_NAME, "Show yt-slurp where the Whisper app is, in Settings, under Whisper app.")
+            messagebox.showinfo(APP_NAME, "Show yt-slurp where your transcription app is: Settings, then Transcription app.")
             self.open_settings()
             return
         path = Path(s["whisper_path"])
@@ -1302,6 +1371,92 @@ class App:
 
     def open_settings(self):
         SettingsDialog(self)
+
+    # ----- first-run setup and updates -----
+
+    def check_tools(self):
+        setup.use_tools()
+        missing = setup.missing_tools()
+        if not missing:
+            return
+        names = {"ffmpeg": "ffmpeg (makes audio files for videos without captions)",
+                 "deno": "Deno (yt-dlp needs it to read YouTube)"}
+        if os.name != "nt":
+            messagebox.showwarning(APP_NAME, "yt-slurp needs " + " and ".join(names[m] for m in missing)
+                                   + ". Install them with your package manager, then restart yt-slurp.")
+            return
+        if not messagebox.askyesno(
+                "Finish setting up yt-slurp",
+                "yt-slurp needs two free tools that aren't on this computer yet:\n\n"
+                + "\n".join(f"\u2022 {names[m]}" for m in missing)
+                + "\n\nDownload them now? This happens once, takes a minute or two, and needs no admin "
+                  "rights. They go in yt-slurp's own folder."):
+            self.stage = "ffmpeg or Deno is missing. Restart yt-slurp to install them."
+            self.update_status()
+            return
+        self.slurp_btn.set_enabled(False)
+
+        def work():
+            try:
+                for name in missing:
+                    def prog(done, total, name=name):
+                        self.events.put(("setup", f"Downloading {name}", done, total))
+                    setup.install_tool(name, prog)
+                setup.use_tools()
+                self.events.put(("setup_done", None))
+            except Exception as e:  # network or disk problem: say so, don't crash
+                self.events.put(("setup_done", str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def check_updates(self, quiet=True):
+        def work():
+            self.events.put(("update", setup.check_for_update(ys.__version__), quiet))
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_update(self, info, quiet):
+        self.update_info = info
+        if info:
+            self.update_btn.set_text(f"Update to {info['version']}")
+            self.update_btn.pack(side="right", padx=8, pady=3)
+        elif not quiet:
+            messagebox.showinfo(APP_NAME, f"You have the latest version, {ys.__version__}.")
+
+    def do_update(self):
+        info = getattr(self, "update_info", None)
+        if not info:
+            return
+        if self.busy():
+            messagebox.showinfo(APP_NAME, "Wait for the current job to finish, then update.")
+            return
+        if not setup.frozen() or not info.get("url"):
+            import webbrowser
+            messagebox.showinfo(APP_NAME, f"Version {info['version']} is available. Your browser will open the "
+                                          "download page." if setup.frozen() else
+                                f"Version {info['version']} is available. You're running yt-slurp from its "
+                                "source code, so update it with git pull in its folder.")
+            if setup.frozen():
+                webbrowser.open(info["page"])
+            return
+        if not messagebox.askyesno(APP_NAME, f"Update yt-slurp to version {info['version']}? It downloads the "
+                                             "new version, then restarts. Your settings and results are kept."):
+            return
+        self.update_btn.set_enabled(False)
+
+        def work():
+            try:
+                def prog(done, total):
+                    self.events.put(("setup", "Downloading the update", done, total))
+                exe = setup.apply_update(info["url"], prog)
+                self.events.put(("updated", exe))
+            except Exception as e:
+                self.events.put(("setup_done", f"The update could not be installed: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def about(self):
+        messagebox.showinfo(APP_NAME, f"yt-slurp {ys.__version__}\n\nCollects YouTube transcripts for Claude "
+                                      f"and Gemini Notebook.\n\nhttps://github.com/{setup.REPO}")
 
     # ----- tools -----
 
@@ -1322,7 +1477,7 @@ class App:
             messagebox.showinfo(
                 APP_NAME,
                 "Two short test WAVs are ready, and their folder is open.\n\n"
-                "1. Click Launch Whisper app, and drag both WAVs into it.\n"
+                "1. Click Launch transcription app, and drag both WAVs into it.\n"
                 "2. When they finish, click Save as .txt for each one.\n"
                 f"3. Save them into:\n{folder / ys.DIR_WHISPER}\n"
                 "   Keep the suggested name. Check it still has the [AbC-d_123xY] part.\n\n"
@@ -1356,12 +1511,12 @@ class App:
             "3. Results appear on the left as they are made: transcripts, WAV files, links and skipped "
             "videos, each in its own colour. Click the chips to hide or show each kind. Click a result to "
             "read it on the right.\n\n"
-            "4. Videos without captions become WAV files. Click Open WAV folder and Launch Whisper app, "
+            "4. Videos without captions become WAV files. Click Open WAV folder and Launch transcription app, "
             "drag the WAVs in, and save each transcript into the whisper-transcripts folder. yt-slurp "
             "merges them by itself.\n\n"
             "5. The files for Claude and Gemini Notebook are under Open Claude files and Open Gemini files.\n\n"
             "Settings is in the menu bar. Before your first real WAVs, use Tools, then "
-            "Check the Whisper app keeps filenames.")
+            "Check the transcription app keeps filenames.")
         self.settings["welcomed"] = True
         save_settings(self.settings)
 
@@ -1375,6 +1530,7 @@ class App:
             self.worker.join(timeout=10)
         save_settings(self.settings)
         self.instance.release()
+        self.closed = True
         self.root.destroy()
 
 
@@ -1490,14 +1646,14 @@ class SettingsDialog:
                  justify="left").pack(anchor="w")
         RoundButton(right, "Change results folder...", self.pick_output, height=30, bg=CARD).pack(anchor="w", pady=4)
 
-        heading(right, "Whisper app")
+        heading(right, "Transcription app")
         self.whisper_var = tk.StringVar(value=s["whisper_path"] or "Not set yet")
         tk.Label(right, textvariable=self.whisper_var, bg=CARD, fg=MUTED, font=(FONT, 9), wraplength=330,
                  justify="left").pack(anchor="w")
-        RoundButton(right, "Choose the Whisper app...", self.pick_whisper, height=30, bg=CARD).pack(anchor="w", pady=4)
+        RoundButton(right, "Choose the transcription app...", self.pick_whisper, height=30, bg=CARD).pack(anchor="w", pady=4)
         row = tk.Frame(right, bg=CARD)
         row.pack(anchor="w", pady=2)
-        tk.Label(row, text="Its window title contains:", bg=CARD, fg=TEXT, font=(FONT, 10)).pack(side="left")
+        tk.Label(row, text="Word in its window title:", bg=CARD, fg=TEXT, font=(FONT, 10)).pack(side="left")
         v = tk.StringVar(value=s["whisper_title"])
         self.vars["whisper_title"] = v
         ttk.Entry(row, textvariable=v, width=14).pack(side="left", padx=5)
@@ -1528,7 +1684,7 @@ class SettingsDialog:
 
     def pick_whisper(self):
         f = filedialog.askopenfilename(
-            parent=self.top, title="Choose the Whisper app (its .exe, .bat, .py or shortcut)",
+            parent=self.top, title="Choose your transcription app (its .exe, .bat, .py or shortcut)",
             filetypes=[("Programs and scripts", "*.exe *.bat *.cmd *.py *.pyw *.lnk"), ("All files", "*.*")])
         if f:
             self.whisper_var.set(f)
@@ -1577,8 +1733,8 @@ class LogWindow:
                             padx=8, pady=6, highlightthickness=0)
         sb = ttk.Scrollbar(textf, orient="vertical", command=self.text.yview, style="Slim.Vertical.TScrollbar")
         self.text.configure(yscrollcommand=sb.set)
-        self.text.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        self.text.pack(side="left", fill="both", expand=True)
         self.text.insert("end", "\n".join(app.log_lines) + "\n")
         self.text.see("end")
         self.text.configure(state="disabled")

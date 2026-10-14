@@ -2,6 +2,20 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
+## 0.2.0 (14th October 2026)
+
+### Changed
+- yt-slurp is now a single `yt-slurp.exe` with Python, the window and yt-dlp built in, replacing `yt-slurp.bat`. No Python install, virtual environment or pip.
+- On first run it downloads ffmpeg and Deno into its own folder if they are missing, checking published checksums; existing copies are used if found.
+- Updates are checked after the window opens, not before; a blue **Update** button appears in the menu bar when a new version is out, and installs it with a restart.
+- The menu bar is now drawn by yt-slurp so it can hold the Update button. Help has "Check for updates" and "About".
+- "Whisper app" is now "transcription app" throughout, so any transcription app fits.
+- With the exe, results go in `Documents\yt-slurp` by default.
+
+### Fixed
+- The progress bar no longer animates while a question waits for your answer; the status bar says "Waiting for your answer".
+- The scrollbar in the file pane was squeezed out of view; both panes now show it, and the scrollbar thumb is easier to see.
+
 ## 0.1.1 (14th October 2026)
 
 ### Fixed

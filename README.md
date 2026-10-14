@@ -2,7 +2,7 @@
 
 yt-slurp collects the transcripts of every video on a YouTube channel or playlist, so you can give them to an AI assistant such as Claude or Gemini Notebook (formerly NotebookLM) for research and analysis. Paste a link and click **Slurp**:
 - Videos with captions become clean, readable text files, each headed with the title, channel, date, length and link.
-- Videos without captions become audio files, ready for a Whisper transcription app.
+- Videos without captions become audio files, ready for a transcription app such as one based on Whisper.
 - yt-slurp then bundles everything into files sized for Claude and for Gemini Notebook.
 
 It runs on Windows 10 and 11, and works on your own computer. It has no account, server or subscription.
@@ -27,27 +27,24 @@ It runs on Windows 10 and 11, and works on your own computer. It has no account,
 
 - Windows 10 or Windows 11.
 - An internet connection.
-- For videos without captions only: a Whisper transcription app that saves its results as `.txt` files, one per audio file.
+- For videos without captions only: a transcription app (for example, one based on OpenAI's Whisper) that saves its results as `.txt` files, one per audio file.
 
-You don't need to install anything else first. On its first run, yt-slurp checks for Python, ffmpeg and Deno and offers to install any that are missing, using Windows' own installer, `winget`.
+You don't need to install anything else. yt-slurp is a single program with everything it needs built in, apart from two free tools, ffmpeg and Deno, which it downloads for you on first run.
 
 ## Install and first run
 
-1. Download yt-slurp. Either:
-   - on this page, select the green **Code** button, then **Download ZIP**, and unzip it into a folder you'll keep, such as `Documents\yt-slurp`; or
-   - if you use Git, run `git clone https://github.com/aidanashby/yt-slurp.git`.
-2. Open the folder in File Explorer and double-click **`yt-slurp.bat`**.
-3. A black setup window opens and checks your computer, one step at a time. When it asks a question, press **Y** for yes or **N** for no.
-   - "Install Python 3.12 ... with winget?" appears only if you have no suitable Python. Press **Y**.
-   - "Install ffmpeg with winget?" appears only if ffmpeg is missing. yt-slurp uses it to make audio files. Press **Y**.
-   - "Install Deno with winget?" appears only if Deno is missing. yt-dlp, the library yt-slurp uses to read YouTube, needs it. Press **Y**.
-   - "A newer version of yt-slurp is available. Update now?" appears on later runs when there is an update.
-4. The first run then installs yt-slurp's own libraries, which takes a minute or two.
-5. The yt-slurp window opens and shows a short "How to use yt-slurp" guide.
+1. Go to the [latest release](https://github.com/aidanashby/yt-slurp/releases/latest) and download **`yt-slurp.exe`**.
+2. Move it somewhere you'll keep it, such as your Desktop or a `yt-slurp` folder in Documents.
+3. Double-click **`yt-slurp.exe`**.
+4. The first time, Windows may show **"Windows protected your PC"**. This appears for any new program that isn't signed with a paid certificate. Select **More info**, then **Run anyway**.
+5. yt-slurp opens and checks for ffmpeg, which makes audio files, and Deno, which yt-dlp needs to read YouTube. If either is missing, it asks to download them. Select **Yes**: it takes a minute or two, happens once, needs no admin rights, and puts them in yt-slurp's own folder (`%LOCALAPPDATA%\yt-slurp\tools`). If you already have them installed, yt-slurp uses those.
+6. A short "How to use yt-slurp" guide appears. You're ready.
 
-After the first run, double-clicking `yt-slurp.bat` opens the window within a few seconds. If yt-slurp is already open, it brings that window to the front instead of opening a second one.
+After that, double-clicking `yt-slurp.exe` opens the window in a few seconds. If yt-slurp is already open, it brings that window to the front instead of opening a second one.
 
-If the setup window stops with a message, it says what went wrong and how to fix it. See also [Troubleshooting](#troubleshooting).
+**Updates.** A few seconds after yt-slurp starts, it checks GitHub for a newer version. If there is one, a blue **Update** button appears at the right of the menu bar. Select it to download the new version and restart; your settings and results are kept. You can also check by hand: select **Help**, then **Check for updates**.
+
+**Where your results go.** By default, results go in `Documents\yt-slurp`. To change this, go to **Settings**, then **Where things go**.
 
 ## Using yt-slurp
 
@@ -67,7 +64,7 @@ While it runs:
 | Symbol | Kind | Meaning |
 |---|---|---|
 | ■ | Transcript | A transcript ready to use |
-| ♪ | WAV | An audio file waiting for your Whisper app |
+| ♪ | WAV | An audio file waiting for your transcription app |
 | ↗ | Link | The video's YouTube address |
 | ⊘ | Skipped | A video that was not transcribed. The reason is in brackets after the title |
 
@@ -76,7 +73,7 @@ While it runs:
 - Select a result to see it on the right. Double-click it to open it: a transcript opens in your text editor, a WAV opens its folder, and a link opens in your browser.
 - On the right, **Search in this file** highlights every match. Use the ‹ and › arrows, or **Enter** and **Shift+Enter**, to move between them.
 
-**Doing a channel again.** Pick it from **Done before**, or paste the same link, and select Slurp. yt-slurp asks whether to **get new videos and retry any that failed**, or to **start again from scratch**. Starting again keeps any Whisper text you saved.
+**Doing a channel again.** Pick it from **Done before**, or paste the same link, and select Slurp. yt-slurp asks whether to **get new videos and retry any that failed**, or to **start again from scratch**. Starting again keeps any transcripts you saved from your transcription app.
 
 **Using a list of links.** Select **Use a list of links from a file** and choose a text file with one channel or playlist link per line. Lines starting with `#` are ignored.
 
@@ -86,16 +83,16 @@ While it runs:
 
 Some videos have no captions. yt-slurp downloads their audio and turns it into WAV files (16 kHz, mono) in the channel's `needs-transcription` folder. Audio over 60 minutes is split into parts at a quiet moment.
 
-Before your first real WAV files, check that your Whisper app keeps yt-slurp's filenames. yt-slurp matches each transcript to its video by the ID in square brackets, for example `[dQw4w9WgXcQ]`. On the **Tools** menu, select **Check the Whisper app keeps filenames** and follow the steps.
+Before your first real WAV files, check that your transcription app keeps yt-slurp's filenames. yt-slurp matches each transcript to its video by the ID in square brackets, for example `[dQw4w9WgXcQ]`. On the **Tools** menu, select **Check the transcription app keeps filenames** and follow the steps.
 
 Then, for real videos:
 
-1. Select **Open WAV folder** and **Launch Whisper app**.
-2. Drag the WAV files into the Whisper app and transcribe them.
+1. Select **Open WAV folder** and **Launch transcription app**.
+2. Drag the WAV files into your transcription app and transcribe them.
 3. Save each result as a `.txt` file into the channel's `whisper-transcripts` folder. Keep the suggested filename.
 4. yt-slurp notices the saved files within a few seconds and merges each video's parts into one transcript. The result appears in the list as a ■ transcript.
 
-To use **Launch Whisper app**, first tell yt-slurp where the app is: go to **Settings**, then **Whisper app**.
+To use **Launch transcription app**, first tell yt-slurp where the app is: go to **Settings**, then **Transcription app**.
 
 ## What you get
 
@@ -107,13 +104,13 @@ Each channel or playlist gets its own folder inside `output`. To open it, select
 | `claude-parts` | All transcripts in upload-date order, joined into files of up to 100,000 words each, to attach to Claude |
 | `gemini-notebook` | The same transcripts arranged for Gemini Notebook: one file per video if there are 50 or fewer, otherwise 50 files of roughly equal size |
 | `links.txt` | The address of every video, one per line |
-| `needs-transcription` | WAV files waiting for your Whisper app |
-| `whisper-transcripts` | Where you save the Whisper app's text |
+| `needs-transcription` | WAV files waiting for your transcription app |
+| `whisper-transcripts` | Where you save your transcription app's text |
 | `manifest.csv` | One row per video, with what happened to it and why. Opens in Excel |
 
 **Why videos are skipped:**
 - they are shorter than the minimum length (5 minutes by default, which also excludes Shorts);
-- they have no captions and aren't in English (most Whisper apps are set up for English);
+- they have no captions and aren't in English (transcription apps are often set up for English only);
 - they are private or deleted;
 - they are a live stream that hasn't finished;
 - you turned that kind of output off in Settings.
@@ -132,7 +129,7 @@ Select **Settings** in the menu bar. Settings are saved for next time.
 | Videos without captions | Make WAV files for videos not in English; how long each audio part can be |
 | Pace | How long to wait between requests to YouTube: Normal (2 to 5 seconds), Slow (5 to 10) or Very slow (10 to 20). Slower is gentler on YouTube for very large channels |
 | Where things go | The results folder |
-| Whisper app | Where the app is, and a word from its window title, so yt-slurp can bring it to the front |
+| Transcription app | Where the app is, and a word from its window title (if left blank, its filename is used), so **Launch transcription app** brings an open copy to the front instead of starting a second one |
 | Advanced | File sizes for Claude and Gemini Notebook |
 
 ## Troubleshooting
@@ -140,8 +137,9 @@ Select **Settings** in the menu bar. Settings are saved for next time.
 | What you see | What to do |
 |---|---|
 | The setup window stops with a message | Follow the advice in the message. To ask for help, copy the window's text: right-click its title bar, choose **Edit**, then **Select All**, and press **Enter** |
-| Double-clicking `yt-slurp.bat` seems to do nothing | yt-slurp may already be open behind other windows. Check the taskbar |
-| A message about a JavaScript runtime | Double-click `yt-slurp.bat` again; it offers to install Deno |
+| "Windows protected your PC" | Select **More info**, then **Run anyway**. It appears because yt-slurp isn't signed with a paid certificate |
+| Double-clicking `yt-slurp.exe` seems to do nothing | yt-slurp may already be open behind other windows. Check the taskbar |
+| A message about a JavaScript runtime, or ffmpeg missing | Restart yt-slurp and select **Yes** when it offers to download them. Downloads need an internet connection |
 | "Cannot read browser cookies" | Chrome, Edge and Brave lock their cookies while open. Close the browser completely (check the system tray), or sign in to YouTube in Firefox and choose Firefox |
 | "Confirm you're not a bot" | YouTube is limiting requests. Wait an hour, choose a slower pace in Settings, and slurp the same link again |
 | Videos marked as failed | On the **Tools** menu, select **Open the manifest in Excel** and read the error column. Slurping the same link again retries them |
@@ -149,15 +147,16 @@ Select **Settings** in the menu bar. Settings are saved for next time.
 
 ## Privacy and responsible use
 
-- yt-slurp runs entirely on your computer. It sends nothing anywhere except normal requests to YouTube, to PyPI (the Python package index) when installing or updating libraries, and to GitHub when checking for updates.
+- yt-slurp runs entirely on your computer. It sends nothing anywhere except normal requests to YouTube, to GitHub when checking for updates, and to gyan.dev and GitHub when downloading ffmpeg and Deno.
 - Your browser's YouTube sign-in is used only if you choose a browser when asked, only to retry members-only or age-restricted videos, and it is never saved.
 - Your settings are kept in `%APPDATA%\yt-slurp`, and results in the `output` folder.
-- Each week yt-slurp updates yt-dlp, the library it uses to read YouTube, to the newest version, because YouTube changes often break older versions.
+- yt-slurp contacts GitHub when it starts, to check for a newer version. It downloads ffmpeg from gyan.dev and Deno from GitHub, checking each against its published checksum.
+- yt-dlp, the library yt-slurp uses to read YouTube, is built in. YouTube changes often break older yt-dlp versions, so keep yt-slurp up to date with the Update button.
 - Use yt-slurp for personal research. Respect YouTube's Terms of Service and the rights of the people who made the videos: don't republish their words as your own.
 
 ## Command line
 
-Everything in the window can also be done from a terminal. In the yt-slurp folder, activate its environment with `.venv\Scripts\Activate.ps1`, then:
+When you run yt-slurp from its source code (see [For developers](#for-developers)), everything in the window can also be done from a terminal:
 
 ```powershell
 yt-slurp https://www.youtube.com/@SomeChannel
@@ -192,7 +191,9 @@ yt-slurp gui
 
 ## For developers
 
-- The pipeline is in `yt_slurp.py` and the window in `yt_slurp_gui.py` (Tkinter). `yt-slurp.bat` is the Windows installer and launcher.
+- The pipeline is in `yt_slurp.py`, the window in `yt_slurp_gui.py` (Tkinter), and first-run setup and updates in `yt_slurp_setup.py`. `yt_slurp_app.py` is the entry point for the `.exe`.
+- To run from source: `pip install -e ".[dev]"`, then `yt-slurp gui`. You need ffmpeg and Deno installed, or let the window download them.
+- The `.exe` is built on GitHub's Windows machines by `.github/workflows/build-exe.yml`. Publishing a release builds it and attaches it to the release.
 - Install for development with `pip install -e ".[dev]"`, then run the tests with `python -m pytest`. The window's tests need a display; on Linux, use `xvfb-run -a python -m pytest`.
 - [STATUS.md](STATUS.md) records what is done and what is next. [docs/TEST-REPORT.md](docs/TEST-REPORT.md) records the latest review.
 
