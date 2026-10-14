@@ -13,6 +13,9 @@ All notable changes to yt-slurp. Dates are in UK format.
 - Slurps no longer bundle transcripts automatically, and the Claude bundle (`claude-parts`) is gone: Claude and ChatGPT take the transcripts as they are. **Make Gemini Notebook files** (or `yt-slurp gemini`) bundles them for Gemini Notebook as a separate step.
 - With the exe, results go in `Documents\yt-slurp` by default.
 
+- Transcripts and Gemini Notebook files are Markdown (`.md`). Each transcript starts with the title as a heading and the details as a list. Transcripts from 0.1 are converted the next time their folder is used.
+- The file pane is a simple editor: formatted view, Markdown source when clicked, find and replace, Undo and Redo (last 10 changes), and a Save button that reads "Saved" when there is nothing to save.
+
 ### Fixed
 - The progress bar no longer animates while a question waits for your answer; the status bar says "Waiting for your answer".
 - The scrollbar in the file pane was squeezed out of view; both panes now show it, and the scrollbar thumb is easier to see.

@@ -140,6 +140,7 @@ def test_merge_without_manifest(tmp_path):
     assert ys.run_command(["merge", str(tmp_path / "missing")]) == 2
 
 
+@pytest.mark.skipif(not __import__("shutil").which("ffmpeg"), reason="needs ffmpeg")
 def test_merge_ignores_stray_and_empty_files(fake):
     assert ys.run_command(["https://www.youtube.com/@test", "--min-minutes", "2", "--chunk-minutes", "1.5"]) == 0
     folder = fake / "output" / "Test Channel"

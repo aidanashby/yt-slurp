@@ -71,7 +71,9 @@ While it runs:
 - The chips above the list (**Links**, **Skipped**, **Transcripts**, **WAVs**) show or hide each kind.
 - The **Filter by name** box narrows the list as you type. Press **Esc** to clear it.
 - Select a result to see it on the right. Double-click it to open it: a transcript opens in your text editor, a WAV opens its folder, and a link opens in your browser.
-- On the right, **Search in this file** highlights every match. Use the ‹ and › arrows, or **Enter** and **Shift+Enter**, to move between them.
+- On the right, a transcript is shown formatted (headings, **bold** and so on). Click in it to edit the Markdown source; click elsewhere to see it formatted again.
+- **Find in this file** highlights every match. Use the ‹ and › arrows, or **Enter** and **Shift+Enter**, to move between them. Type in **Replace with**, then select **Replace** (the current match) or **Replace all**.
+- **Undo** and **Redo** remember your last 10 changes. **Save** (or **Ctrl+S**) writes your changes; it is grey and reads **Saved** when there is nothing to save. If you move to another file with unsaved changes, yt-slurp asks whether to save them.
 
 **Doing a channel again.** Pick it from **Done before**, or paste the same link, and select Slurp. yt-slurp asks whether to **get new videos and retry any that failed**, or to **start again from scratch**. Starting again keeps any transcripts you saved from your transcription app.
 
@@ -100,7 +102,7 @@ Each channel or playlist gets its own folder inside `output`. To open it, select
 
 | Item | What it is |
 |---|---|
-| `transcripts` | One text file per video, named `Title [video ID] date.txt` |
+| `transcripts` | One Markdown file per video, named `Title [video ID] date.md`. Each starts with the title as a heading, then the channel, date, length, link and caption source as a list, then a line, then the transcript |
 | `gemini-notebook` | Made only when you select **Make Gemini Notebook files**: the transcripts arranged for Gemini Notebook, in upload-date order. One file per video if there are 50 or fewer, otherwise 50 files of roughly equal size |
 | `links.txt` | The address of every video, one per line |
 | `needs-transcription` | WAV files waiting for your transcription app |

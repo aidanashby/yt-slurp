@@ -93,8 +93,8 @@ def test_full_pipeline(fake, monkeypatch):
 
     transcript = next((folder / "transcripts").iterdir())
     text = transcript.read_text(encoding="utf-8")
-    assert transcript.name == "Has Captions [capt0000001] 2024-01-02.txt"
-    assert "Title: Has Captions" in text and text.rstrip().endswith("hello everyone this is a test")
+    assert transcript.name == "Has Captions [capt0000001] 2024-01-02.md"
+    assert text.startswith("# Has Captions\n") and "- **URL:** <https://www.youtube.com/watch?v=capt0000001>" in text and text.rstrip().endswith("hello everyone this is a test")
 
     wavs = sorted(p.name for p in (folder / "needs-transcription").iterdir())
     assert wavs == ["No Captions Long [nocap000002] 2024-01-03 part 01 of 02.wav",
@@ -121,9 +121,9 @@ def test_full_pipeline(fake, monkeypatch):
     (wt / "stray.txt").write_text("x", encoding="utf-8")
     assert ys.main(["merge", str(folder), "--delete-wavs"]) == 0
     assert ys.Manifest(folder / "manifest.csv").get("nocap000002")["status"] == "merged"
-    merged = (folder / "transcripts" / "No Captions Long [nocap000002] 2024-01-03.txt").read_text(encoding="utf-8")
+    merged = (folder / "transcripts" / "No Captions Long [nocap000002] 2024-01-03.md").read_text(encoding="utf-8")
     assert merged.endswith("First part.\n\nMore.\n\nSecond part.\n")
-    assert "Transcript: Whisper" in merged
+    assert "- **Transcript:** your transcription app" in merged
     assert not list((folder / "needs-transcription").glob("*.wav"))
     assert not (folder / "gemini-notebook").exists()  # bundling is a separate step now
     assert not (folder / "claude-parts").exists()
@@ -191,11 +191,16 @@ def test_migrate_names_from_older_versions(tmp_path):
     needs.mkdir(parents=True)
     (needs / "2024-01-03 Talk [nocap000002] part 01 of 02.wav").write_bytes(b"x")
     (tmp_path / "transcripts").mkdir()
-    (tmp_path / "transcripts" / "2024-01-02 Other [capt0000001].txt").write_text("t", encoding="utf-8")
+    (tmp_path / "transcripts" / "2024-01-02 Other [capt0000001].txt").write_text(
+        "Title: Other\nChannel: C\nDate: 2024-01-02\nDuration: 1:00\nURL: https://www.youtube.com/watch?v=capt0000001\n"
+        "Transcript: YouTube captions\n\nHello *there*.", encoding="utf-8")
     ys.migrate_names(tmp_path)
     assert (tmp_path / "needs-transcription" / "Talk [nocap000002] 2024-01-03 part 01 of 02.wav").exists()
     assert not (tmp_path / "needs-transcription" / "batch 01").exists()
-    assert (tmp_path / "transcripts" / "Other [capt0000001] 2024-01-02.txt").exists()
+    md = tmp_path / "transcripts" / "Other [capt0000001] 2024-01-02.md"
+    assert md.exists() and not md.with_suffix(".txt").exists()
+    text = md.read_text(encoding="utf-8")
+    assert text.startswith("# Other\n") and "- **Channel:** C" in text and text.rstrip().endswith("Hello \\*there\\*.")
 
 
 def test_gemini_command_needs_transcripts(fake):

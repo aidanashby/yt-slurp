@@ -299,24 +299,38 @@ def test_group_for_gemini_overflow_when_words_exceed():
 
 
 def test_split_transcript_repeats_header():
-    header = "Title: T\nURL: u\n"
+    header = ys.make_header("T", "C", "20240101", 60, "dQw4w9WgXcQ", "captions")
     body = "\n\n".join(" ".join(["w"] * 600) for _ in range(5))
-    pieces = ys.split_transcript(header + "\n" + body, 1500)
+    pieces = ys.split_transcript(ys.transcript_doc(header, body), 1500)
     assert len(pieces) > 1
-    assert all(p.startswith("Title: T\nURL: u") for p in pieces)
+    assert all(p.startswith("# T\n") and "- **Section:**" in p for p in pieces)
     assert all(len(p.split()) <= 1500 for p in pieces)
-    assert sum(p.count("w") for p in pieces) == 3000
+    assert sum(p.split().count("w") for p in pieces) == 3000
 
 
 def test_build_gemini_end_to_end(tmp_path):
     t = tmp_path / ys.DIR_TRANSCRIPTS
     t.mkdir()
     for i, date in enumerate(["2024-01-01", "2023-05-05", "2024-06-01"]):
-        (t / f"V{i} [{'a' * 10}{i}] {date}.txt").write_text(f"Title: V{i}\n\n" + "word " * 50, encoding="utf-8")
+        (t / f"V{i} [{'a' * 10}{i}] {date}.md").write_text(f"# V{i}\n\n---\n\n" + "word " * 50, encoding="utf-8")
     stats = ys.build_gemini(tmp_path, max_sources=2, max_source_words=1000)
     gemini = sorted((tmp_path / ys.DIR_GEMINI).iterdir())
     assert stats["videos"] == 3 and len(gemini) == 2
     first = gemini[0].read_text(encoding="utf-8")
-    assert first.index("Title: V1") < first.index("Title: V0")  # upload-date order
+    assert first.index("# V1") < first.index("# V0")  # upload-date order
     assert gemini[0].name.startswith("01 of 02 2023-05-05 to")
     assert not (tmp_path / "claude-parts").exists()
+
+def test_markdown_header_and_escaping():
+    doc = ys.transcript_doc(ys.make_header("A *bold* [title]", "Chan_nel", "20240102", 125, "dQw4w9WgXcQ", "x"),
+                            "# not a heading\n\n- not a list\n\nplain *text*")
+    assert doc.startswith("# A \\*bold\\* \\[title\\]\n\n- **Channel:** Chan\\_nel\n- **Date:** 2024-01-02\n")
+    assert "- **URL:** <https://www.youtube.com/watch?v=dQw4w9WgXcQ>" in doc
+    assert "\n---\n\n\\# not a heading\n\n\\- not a list\n\nplain \\*text\\*\n" in doc
+
+
+def test_old_header_to_md():
+    old = "Title: T\nChannel: C\nDate: 2024-01-01\nDuration: 1:00\nURL: https://www.youtube.com/watch?v=dQw4w9WgXcQ\nTranscript: x\n\nHi."
+    md = ys.old_header_to_md(old)
+    assert md.startswith("# T\n") and md.rstrip().endswith("Hi.")
+    assert ys.old_header_to_md("just text") is None

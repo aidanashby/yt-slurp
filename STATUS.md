@@ -16,7 +16,7 @@ yt-slurp is now a single self-contained `yt-slurp.exe`, built on GitHub's Window
 - **`yt_slurp_gui.py`** (the window, Tkinter, styled after the Whisper Transcriber app, with a red tongue icon):
   - a link box with a Slurp split button (the arrow does just normal videos, just Shorts or just live streams), Pause/Resume and Stop, the option to use a file of links, and a list of channels you've done before;
   - one output list for transcripts, WAVs, links and skipped videos, colour-coded, filtered by chips (all on by default) and by a name filter; names are the exact YouTube title, with any extra (part number, skip reason) at the end; the list only follows new items when you're already at the bottom;
-  - a content pane with in-file search, highlighting, and previous/next match;
+  - a file pane that shows transcripts formatted, and becomes a Markdown editor when clicked: find and replace, Undo/Redo (10 steps), Save;
   - a settings window (Settings in the menu bar) covering which videos, what to make (transcripts, WAVs, links), caption language, timestamps, WAV options, pace, folders, the transcription app and advanced limits;
   - buttons for the results and WAV folders, Make Gemini Notebook files, and to launch (or bring forward) the transcription app;
   - a one-line status bar that opens the full log;
@@ -40,6 +40,7 @@ yt-slurp is now a single self-contained `yt-slurp.exe`, built on GitHub's Window
 - yt-slurp does not run Whisper. Your Whisper transcriber app (local or remote) transcribes the WAVs; you save each result into `whisper-transcripts`, and yt-slurp merges it.
 - WAVs all go in one folder, `needs-transcription`. Batch folders were dropped.
 - Filenames put the title first, then the ID and upload date. Gemini Notebook files are in upload-date order, taken from the manifest.
+- Transcripts are Markdown (`.md`) with the details as a heading and list at the top.
 - Slurps output transcripts only. Bundling is a separate step, for Gemini Notebook only: Claude and ChatGPT projects take the per-video transcripts as they are.
 - Skipped videos show in the window with the reason: shorter than the minimum, not in English with no captions, private or deleted, live stream not finished, or turned off in settings.
 - Audio over 60 minutes is split into equal parts no longer than the limit, each cut at the nearest silence within two minutes.

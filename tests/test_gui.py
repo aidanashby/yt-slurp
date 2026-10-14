@@ -16,6 +16,9 @@ from test_pipeline import FakeNet  # noqa: E402
 def app(monkeypatch, tmp_path):
     if os.name != "nt" and not os.environ.get("DISPLAY"):
         pytest.skip("no display")
+    import shutil
+    if not shutil.which("ffmpeg"):
+        pytest.skip("needs ffmpeg")
     import yt_slurp_gui as gui
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setattr(ys, "Net", FakeNet)
@@ -97,7 +100,7 @@ def test_slurp_shows_everything_together_and_auto_merges(app):
     iid = next(i for i in app.tree.get_children() if app.tree.item(i, "text") == "\u25a0  Has Captions")
     app.tree.selection_set(iid)
     app.root.update()
-    assert "Title: Has Captions" in app.preview_text.get("1.0", "end")
+    assert app.preview_text.get("1.0", "end").startswith("Has Captions")  # rendered heading
     app.text_search.var.set("test")
     app.run_search()  # normally runs 150 ms after typing stops
     assert len(app.matches) == 2 and app.match_label.cget("text") == "1 of 2"  # header and body
@@ -259,4 +262,66 @@ def test_make_gemini_notebook_files_is_a_separate_step(app):
     assert not (folder / ys.DIR_GEMINI).exists()
     app.make_gemini()
     pump(app, lambda: idle(app))
-    assert any((folder / ys.DIR_GEMINI).glob("*.txt"))
+    assert any((folder / ys.DIR_GEMINI).glob("*.md"))
+
+
+def test_md_segments_render_the_basics():
+    import yt_slurp_gui as gui
+    runs = gui.md_segments("# Title\n\n- **Channel:** C\\_D\n---\nSome **bold**, *italic* and <https://x.y>")
+    text = "".join(t for t, _ in runs)
+    assert text.startswith("Title\n\n•  Channel: C_D\n")
+    assert ("Title", ("h1",)) in runs
+    assert ("Channel:", ("bullet", "bold")) in runs
+    assert ("bold", ("bold",)) in runs and ("italic", ("italic",)) in runs
+    assert ("https://x.y", ("link",)) in runs
+    assert any("hr" in tags for _, tags in runs)
+
+
+def test_edit_save_replace_undo(app, monkeypatch):
+    run_fake(app)
+    iid = next(i for i in app.tree.get_children() if app.tree.item(i, "text") == "■  Has Captions")
+    app.tree.selection_set(iid)
+    app.root.update()
+    path = app.edit_item["path"]
+    # Viewing: rich text, Save greyed out and reading "Saved".
+    assert not app.editing and app.save_btn.text == "Saved" and not app.save_btn.enabled
+    # Clicking the pane switches to the Markdown source.
+    app.start_editing()
+    assert app.editing and app.editor_text().startswith("# Has Captions")
+    app.editor.insert("end", "\nAn **added** line.")
+    app.editor.event_generate("<<Modified>>")
+    app.root.update()
+    assert app.save_btn.text == "Save" and app.save_btn.enabled
+    # Find and replace.
+    app.text_search.var.set("hello")
+    app.replace_box.var.set("goodbye")
+    app.replace_all()
+    assert "goodbye everyone" in app.editor_text()
+    app.undo()
+    assert "hello everyone" in app.editor_text()
+    app.redo()
+    assert "goodbye everyone" in app.editor_text()
+    # Save.
+    app.save_file()
+    assert "goodbye everyone" in path.read_text(encoding="utf-8")
+    assert app.save_btn.text == "Saved" and not app.save_btn.enabled
+    # Leaving the pane shows the rendered view, with the bold made bold.
+    app.show_view(app.editor_text())
+    assert not app.editing
+    assert "added" in app.preview_text.get("1.0", "end") and "**" not in app.preview_text.get("1.0", "end")
+
+
+def test_unsaved_changes_prompt_when_switching(app, monkeypatch):
+    import yt_slurp_gui as gui
+    run_fake(app)
+    iid = next(i for i in app.tree.get_children() if app.tree.item(i, "text") == "■  Has Captions")
+    app.tree.selection_set(iid)
+    app.root.update()
+    app.start_editing()
+    app.editor.insert("end", " more")
+    asked = []
+    monkeypatch.setattr(gui.messagebox, "askyesnocancel", lambda *a, **k: asked.append(1) or False)
+    other = next(i for i in app.tree.get_children() if i != iid)
+    app.tree.selection_set(other)
+    app.root.update()
+    assert asked and app.edit_item is None or app.edit_item is not app.items[int(iid)]

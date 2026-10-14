@@ -101,12 +101,12 @@ WINDOWS_RESERVED = {
 }
 
 DIR_TRANSCRIPTS = "transcripts"
+TRANSCRIPT_EXT = ".md"  # transcripts and Gemini Notebook files are Markdown
 DIR_NEEDS = "needs-transcription"
 DIR_WHISPER = "whisper-transcripts"
 DIR_GEMINI = "gemini-notebook"
 DIR_WORK = ".work"
 
-SEPARATOR = "=" * 72
 
 
 # =============================================================================
@@ -481,13 +481,58 @@ def captions_to_text(data: str, ext: str, kind: str, timestamps: bool) -> str:
     return paragraphise(cues, timestamps)
 
 
+HEADER_END = "\n---\n"  # the rule between a transcript's details and its text
+
+
 def make_header(title: str, channel: str, date: str, duration, vid: str, source: str) -> str:
-    return (f"Title: {title}\n"
-            f"Channel: {channel or 'unknown'}\n"
-            f"Date: {iso_date(date)}\n"
-            f"Duration: {fmt_duration(duration)}\n"
-            f"URL: {watch_url(vid)}\n"
-            f"Transcript: {source}\n")
+    """The details at the top of every transcript, as Markdown: the title as a
+    heading, then a list, then a rule. Readable as plain text, rendered, or by an AI."""
+    return (f"# {md_escape_inline(title)}\n\n"
+            f"- **Channel:** {md_escape_inline(channel or 'unknown')}\n"
+            f"- **Date:** {iso_date(date)}\n"
+            f"- **Duration:** {fmt_duration(duration)}\n"
+            f"- **URL:** <{watch_url(vid)}>\n"
+            f"- **Transcript:** {source}\n"
+            f"{HEADER_END}")
+
+
+def md_escape_inline(text: str) -> str:
+    """Stop *, _, `, [ and ] in titles and speech being read as formatting."""
+    return re.sub(r"([\\`*_\[\]])", r"\\\1", text)
+
+
+def md_body(text: str) -> str:
+    """Speech as Markdown paragraphs. Also escapes a paragraph that would
+    otherwise start a heading, list or quote."""
+    out = []
+    for para in text.split("\n\n"):
+        para = md_escape_inline(para.strip())
+        para = re.sub(r"^(#|>|[-+]\s|\d+[.)]\s)", r"\\\1", para)
+        if para:
+            out.append(para)
+    return "\n\n".join(out)
+
+
+def transcript_doc(header: str, body: str) -> str:
+    return f"{header}\n{md_body(body)}\n"
+
+
+def old_header_to_md(text: str) -> str | None:
+    """Convert a transcript from yt-slurp 0.1 ('Title: ...' lines, a blank line,
+    then the text) to Markdown. None if it isn't in that form."""
+    head, sep, body = text.partition("\n\n")
+    fields = dict(line.split(": ", 1) for line in head.splitlines() if ": " in line)
+    if not sep or "Title" not in fields or "URL" not in fields:
+        return None
+    m = re.search(r"v=([A-Za-z0-9_-]{11})", fields["URL"])
+    header = (f"# {md_escape_inline(fields['Title'])}\n\n"
+              f"- **Channel:** {md_escape_inline(fields.get('Channel', 'unknown'))}\n"
+              f"- **Date:** {fields.get('Date', 'undated')}\n"
+              f"- **Duration:** {fields.get('Duration', '?:??')}\n"
+              f"- **URL:** <{watch_url(m.group(1)) if m else fields['URL']}>\n"
+              f"- **Transcript:** {fields.get('Transcript', 'unknown')}\n"
+              f"{HEADER_END}")
+    return transcript_doc(header, body.strip())
 
 
 def is_english(language: str | None) -> bool:
@@ -724,11 +769,14 @@ def split_transcript(text: str, max_words: int) -> list[str]:
     max_words, each starting with the header marked as continued."""
     if len(text.split()) <= max_words:
         return [text]
-    header, _, body = text.partition("\n\n")
+    header, sep, body = text.partition(HEADER_END)
+    if not sep:
+        header, _, body = text.partition("\n\n")
+    header = header.rstrip("\n")
     room = max(1000, max_words - len(header.split()) - 10)
-    pieces = split_words(body, room)
+    pieces = split_words(body.strip(), room)
     n = len(pieces)
-    return [f"{header}\nSection: {i} of {n}\n\n{p}" for i, p in enumerate(pieces, 1)]
+    return [f"{header}\n- **Section:** {i} of {n}\n{HEADER_END}\n{p}" for i, p in enumerate(pieces, 1)]
 
 
 # =============================================================================
@@ -1476,7 +1524,7 @@ class SourceRun:
         if st == "skipped-non-english":
             return self.args.include_non_english
         if st == "transcript":
-            return not find_by_id(self.folder / DIR_TRANSCRIPTS, row["id"], ".txt")
+            return not find_by_id(self.folder / DIR_TRANSCRIPTS, row["id"], TRANSCRIPT_EXT)
         if st == "wav":
             n = int(row["wav_files"] or 0)
             return len(find_by_id(self.folder / DIR_NEEDS, row["id"], ".wav")) < n or n == 0
@@ -1605,10 +1653,10 @@ class SourceRun:
                 label = f"YouTube {'manual' if kind == 'manual' else 'auto-generated'} captions ({key.removesuffix('-orig')})"
                 header = make_header(meta.get("title") or row["title"], channel, row["upload_date"],
                                      row["duration"], vid, label)
-                for old in find_by_id(self.folder / DIR_TRANSCRIPTS, vid, ".txt"):
+                for old in find_by_id(self.folder / DIR_TRANSCRIPTS, vid, TRANSCRIPT_EXT):
                     old.unlink()
-                out = self.folder / DIR_TRANSCRIPTS / f"{stem}.txt"
-                write_atomic(out, f"{header}\n{text}\n")
+                out = self.folder / DIR_TRANSCRIPTS / f"{stem}{TRANSCRIPT_EXT}"
+                write_atomic(out, transcript_doc(header, text))
                 self.manifest.set(vid, status="transcript", source=kind, error="")
                 say(f"    transcript ({kind} captions)")
                 UI.item("transcript", self.folder, out, title=row["title"])
@@ -1738,6 +1786,14 @@ def migrate_names(folder: Path) -> None:
                 new = new_style_name(f.name)
                 if f.is_file() and new and not (d / new).exists():
                     os.replace(f, d / new)
+    tdir = folder / DIR_TRANSCRIPTS
+    if tdir.is_dir():  # 0.1 transcripts were .txt with 'Title:' lines
+        for f in list(tdir.glob("*.txt")):
+            target = f.with_suffix(TRANSCRIPT_EXT)
+            converted = old_header_to_md(read_text(f))
+            if converted and not target.exists():
+                write_atomic(target, converted)
+                f.unlink()
 
 
 def write_links(folder: Path, manifest: Manifest) -> None:
@@ -1778,14 +1834,14 @@ def build_gemini(folder: Path, max_sources: int, max_source_words: int,
     tdir = folder / DIR_TRANSCRIPTS
     if manifest is None and (folder / "manifest.csv").exists():
         manifest = Manifest(folder / "manifest.csv")
-    files = sorted(tdir.glob("*.txt"), key=lambda p: transcript_sort_key(p.name, manifest)) if tdir.is_dir() else []
+    files = sorted(tdir.glob(f"*{TRANSCRIPT_EXT}"), key=lambda p: transcript_sort_key(p.name, manifest)) if tdir.is_dir() else []
     texts = [read_text(p).strip() for p in files]
     if (folder / DIR_GEMINI).exists():
         shutil.rmtree(folder / DIR_GEMINI)
     if not texts:
         return {"videos": 0, "gemini": 0, "gemini_over": 0}
 
-    joiner = f"\n\n{SEPARATOR}\n\n"
+    joiner = "\n\n"  # each transcript starts with its own heading
     # Split any video over the hard per-source limit into sections first.
     limit = min(max_source_words, GEMINI_MAX_WORDS_PER_SOURCE)
     items, item_files = [], []
@@ -1802,7 +1858,7 @@ def build_gemini(folder: Path, max_sources: int, max_source_words: int,
         else:
             first = file_date(item_files[g[0]].name)
             last = file_date(item_files[g[-1]].name)
-            fname = f"{n:02d} of {len(ggroups):02d} {first} to {last}.txt"
+            fname = f"{n:02d} of {len(ggroups):02d} {first} to {last}{TRANSCRIPT_EXT}"
         write_atomic(folder / DIR_GEMINI / fname, joiner.join(items[i] for i in g) + "\n")
     return {"videos": len(texts), "gemini": len(ggroups), "gemini_over": over}
 
@@ -1895,12 +1951,12 @@ def _merge(folder: Path, args) -> None:
             pass
         title = meta.get("title") or row["title"]
         header = make_header(title, row["channel"] or run.get("name", ""), row["upload_date"],
-                             row["duration"], vid, "Whisper large-v3 (transcriber app)")
+                             row["duration"], vid, "your transcription app")
         stem = video_stem(row["upload_date"], fit_title(safe_filename(title), budget), vid)
-        for old in find_by_id(folder / DIR_TRANSCRIPTS, vid, ".txt"):
+        for old in find_by_id(folder / DIR_TRANSCRIPTS, vid, TRANSCRIPT_EXT):
             old.unlink()
-        out = folder / DIR_TRANSCRIPTS / f"{stem}.txt"
-        write_atomic(out, f"{header}\n{body.strip()}\n")
+        out = folder / DIR_TRANSCRIPTS / f"{stem}{TRANSCRIPT_EXT}"
+        write_atomic(out, transcript_doc(header, body))
         manifest.set(vid, status="merged", source="whisper", error="")
         merged.append(row)
         UI.item("transcript", folder, out, title=title)
@@ -2237,6 +2293,7 @@ def cmd_gemini(argv: list[str]) -> None:
     if not (folder / DIR_TRANSCRIPTS).is_dir():
         raise Stop(f"No transcripts in {folder} yet. Slurp a channel or playlist first.")
     with FolderLock(folder):
+        migrate_names(folder)
         stats = build_gemini(folder, args.max_sources, args.max_source_words)
     report_gemini(stats, args)
     if stats["videos"]:

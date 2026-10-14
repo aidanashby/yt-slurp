@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -36,6 +37,7 @@ def default_output() -> Path:
 
 AUTO_MERGE_EVERY_MS = 5000
 POLL_MS = 100
+EDIT_UNDO_STEPS = 10
 UPDATE_CHECK_DELAY_MS = 3000
 SEARCH_DELAY_MS = 150
 MAX_HIGHLIGHTS = 2000
@@ -214,7 +216,7 @@ def folder_items(folder: Path) -> list[dict]:
 
     items = []
     tdir = folder / ys.DIR_TRANSCRIPTS
-    for p in (tdir.glob("*.txt") if tdir.is_dir() else []):
+    for p in (tdir.glob(f"*{ys.TRANSCRIPT_EXT}") if tdir.is_dir() else []):
         items.append({"kind": "transcript", "path": p, "title": title_for(p), "text": ""})
     ndir = folder / ys.DIR_NEEDS
     for p in (ndir.rglob("*.wav") if ndir.is_dir() else []):
@@ -258,6 +260,71 @@ def find_matches(text: str, needle: str) -> list[int]:
     while i >= 0:
         out.append(i)
         i = hay.find(needle, i + 1)
+    return out
+
+
+# =============================================================================
+# Markdown rendering (pure: turns Markdown into text runs with style tags)
+# =============================================================================
+
+_INLINE_RE = re.compile(
+    r"\\(?P<esc>[\\`*_\[\]#>+\-.()!])"
+    r"|`(?P<code>[^`]+)`"
+    r"|\*\*(?P<bold>.+?)\*\*"
+    r"|__(?P<bold2>.+?)__"
+    r"|(?<![\w*])\*(?P<ital>[^*\s][^*]*?)\*(?!\*)"
+    r"|(?<![\w_])_(?P<ital2>[^_\s][^_]*?)_(?![\w_])"
+    r"|\[(?P<ltext>[^\]]+)\]\((?P<lurl>[^)\s]+)\)"
+    r"|<(?P<auto>https?://[^>\s]+)>"
+)
+
+
+def md_inline(text: str, base: tuple = ()) -> list[tuple[str, tuple]]:
+    """Inline Markdown (bold, italic, code, links, escapes) to (text, tags) runs."""
+    runs, pos = [], 0
+    for m in _INLINE_RE.finditer(text):
+        if m.start() > pos:
+            runs.append((text[pos:m.start()], base))
+        g = m.groupdict()
+        if g["esc"] is not None:
+            runs.append((g["esc"], base))
+        elif g["code"] is not None:
+            runs.append((g["code"], base + ("code",)))
+        elif g["bold"] is not None or g["bold2"] is not None:
+            runs += md_inline(g["bold"] if g["bold"] is not None else g["bold2"], base + ("bold",))
+        elif g["ital"] is not None or g["ital2"] is not None:
+            runs += md_inline(g["ital"] if g["ital"] is not None else g["ital2"], base + ("italic",))
+        elif g["ltext"] is not None:
+            runs.append((g["ltext"], base + ("link",)))
+        else:
+            runs.append((g["auto"], base + ("link",)))
+        pos = m.end()
+    if pos < len(text):
+        runs.append((text[pos:], base))
+    return runs
+
+
+def md_segments(text: str) -> list[tuple[str, tuple]]:
+    """A Markdown document (headings, lists, quotes, rules, paragraphs) as
+    (text, tags) runs for a Tk Text widget."""
+    out: list[tuple[str, tuple]] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        m = re.match(r"^(#{1,3})\s+(.*)$", stripped)
+        if m:
+            out += md_inline(m.group(2), (f"h{len(m.group(1))}",))
+        elif re.fullmatch(r"(-{3,}|\*{3,}|_{3,})", stripped):
+            out.append(("\u2500" * 30, ("hr",)))
+        elif re.match(r"^[-*+]\s+", stripped):
+            out.append(("\u2022  ", ("bullet",)))
+            out += md_inline(re.sub(r"^[-*+]\s+", "", stripped), ("bullet",))
+        elif stripped.startswith(">"):
+            out += md_inline(stripped.lstrip("> "), ("quote",))
+        else:
+            out += md_inline(line)
+        out.append(("\n", ()))
+    if out and out[-1] == ("\n", ()):
+        out.pop()
     return out
 
 
@@ -835,37 +902,87 @@ class App:
         self.tree.bind("<Double-1>", self.open_selected)
         panes.add(left, minsize=320, width=520)
 
-        right = card(panes)
+        right = self.right_pane = card(panes)
         srow = tk.Frame(right, bg=CARD)
-        srow.pack(fill="x", padx=10, pady=(10, 6))
-        self.text_search = SearchBox(srow, "Search in this file", self.schedule_search, clear_button=True)
+        srow.pack(fill="x", padx=10, pady=(10, 4))
+        self.text_search = SearchBox(srow, "Find in this file", self.schedule_search, clear_button=True)
         self.text_search.pack(side="left", fill="x", expand=True)
         self.text_search.entry.bind("<Return>", lambda e: self.step_match(1))
         self.line_starts = [0]
         self.text_search.entry.bind("<Shift-Return>", lambda e: self.step_match(-1))
-        for sym, step in (("‹", -1), ("›", 1)):
+        for sym, step in (("\u2039", -1), ("\u203a", 1)):
             b = tk.Label(srow, text=sym, bg=CARD, fg=SLATE, font=(FONT, 16), cursor="hand2", padx=6)
             b.pack(side="left")
             b.bind("<Button-1>", lambda e, s=step: self.step_match(s))
         self.match_label = tk.Label(srow, text="", bg=CARD, fg=MUTED, font=(FONT, 9), width=10)
         self.match_label.pack(side="left")
-        textf = tk.Frame(right, bg=CARD)
-        textf.pack(fill="both", expand=True, padx=(10, 4), pady=(0, 10))
-        self.preview_text = tk.Text(textf, wrap="word", width=20, font=(FONT, 10), padx=10, pady=8, state="disabled",
-                                    relief="flat", bg=CARD, fg=TEXT, highlightthickness=0,
-                                    selectbackground="#bbdefb")
-        self.preview_text.tag_configure("match", background=MATCH_BG)
-        self.preview_text.tag_configure("current", background=CURRENT_BG)
-        self.preview_text.tag_raise("current")
-        psb = ttk.Scrollbar(textf, orient="vertical", command=self.preview_text.yview,
-                            style="Slim.Vertical.TScrollbar")
-        self.preview_text.configure(yscrollcommand=psb.set)
-        psb.pack(side="right", fill="y")  # pack the bar first, or the wide text squeezes it out
-        self.preview_text.pack(side="left", fill="both", expand=True)
+
+        rrow = tk.Frame(right, bg=CARD)
+        rrow.pack(fill="x", padx=10, pady=(0, 6))
+        self.replace_box = SearchBox(rrow, "Replace with", lambda: None, clear_button=True)
+        self.replace_box.pack(side="left", fill="x", expand=True)
+        self.replace_btn = RoundButton(rrow, "Replace", self.replace_one, height=28, bg=CARD, font=(FONT, 9))
+        self.replace_btn.pack(side="left", padx=(6, 0))
+        self.replace_all_btn = RoundButton(rrow, "Replace all", self.replace_all, height=28, bg=CARD, font=(FONT, 9))
+        self.replace_all_btn.pack(side="left", padx=(6, 0))
+        self.undo_btn = RoundButton(rrow, "\u21b6 Undo", self.undo, height=28, bg=CARD, font=(FONT, 9))
+        self.undo_btn.pack(side="left", padx=(14, 0))
+        self.redo_btn = RoundButton(rrow, "Redo \u21b7", self.redo, height=28, bg=CARD, font=(FONT, 9))
+        self.redo_btn.pack(side="left", padx=(6, 0))
+        self.save_btn = RoundButton(rrow, "Saved", self.save_file, colour=GREEN, hover=GREEN_DARK, height=28,
+                                    width=74, bg=CARD, font=(FONT, 9, "bold"))
+        self.save_btn.pack(side="left", padx=(6, 0))
+
+        stack = tk.Frame(right, bg=CARD)
+        stack.pack(fill="both", expand=True, padx=(10, 4), pady=(0, 10))
+        stack.rowconfigure(0, weight=1)
+        stack.columnconfigure(0, weight=1)
+        self.view_frame, self.preview_text = self.text_area(stack, state="disabled")
+        self.edit_frame, self.editor = self.text_area(stack, undo=True, maxundo=EDIT_UNDO_STEPS, autoseparators=True,
+                                                      insertbackground=TEXT)
+        self.editor.configure(font=("Consolas", 10))
+        self.view_frame.tkraise()
+        self.editing = False
+        self.edit_item = None
+        self.saved_text = ""
+        self.preview_text.bind("<Button-1>", self.start_editing)
+        self.preview_text.bind("<FocusIn>", lambda e: self.start_editing() if self.edit_item else None)
+        self.editor.bind("<<Modified>>", self.edit_changed)
+        self.editor.bind("<KeyRelease>", lambda e: self.update_edit_buttons())
+        for seq in ("<Control-s>", "<Control-S>"):
+            self.root.bind_all(seq, lambda e: (self.save_file(), "break")[1])
+        self.root.bind_all("<FocusIn>", self.focus_moved, add="+")
         self.empty_hint = tk.Label(right, text="Select a file from the list to see it here.", bg=CARD, fg=MUTED,
                                    font=(FONT, 10))
         self.empty_hint.place(relx=0.5, rely=0.5, anchor="center")
+        self.update_edit_buttons()
         panes.add(right, minsize=320)
+
+    def text_area(self, parent, **kw):
+        frame = tk.Frame(parent, bg=CARD)
+        frame.grid(row=0, column=0, sticky="nsew")
+        text = tk.Text(frame, wrap="word", width=20, font=(FONT, 10), padx=10, pady=8, relief="flat", bg=CARD,
+                       fg=TEXT, highlightthickness=0, selectbackground="#bbdefb", **kw)
+        text.tag_configure("match", background=MATCH_BG)
+        text.tag_configure("current", background=CURRENT_BG)
+        for tag, opts in (("h1", {"font": (FONT, 15, "bold"), "spacing3": 6}),
+                          ("h2", {"font": (FONT, 13, "bold"), "spacing3": 4}),
+                          ("h3", {"font": (FONT, 11, "bold")}),
+                          ("bold", {"font": (FONT, 10, "bold")}),
+                          ("italic", {"font": (FONT, 10, "italic")}),
+                          ("code", {"font": ("Consolas", 10), "background": "#f1f1f1"}),
+                          ("link", {"foreground": BLUE, "underline": True}),
+                          ("bullet", {"lmargin1": 8, "lmargin2": 24}),
+                          ("quote", {"lmargin1": 16, "lmargin2": 16, "foreground": MUTED}),
+                          ("hr", {"foreground": BORDER})):
+            text.tag_configure(tag, **opts)
+        text.tag_raise("match")
+        text.tag_raise("current")
+        sb = ttk.Scrollbar(frame, orient="vertical", command=text.yview, style="Slim.Vertical.TScrollbar")
+        text.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")  # pack the bar first, or the wide text squeezes it out
+        text.pack(side="left", fill="both", expand=True)
+        return frame, text
 
     def build_bottom(self):
         status = self.status_row = tk.Frame(self.root, bg=BG)
@@ -1017,28 +1134,215 @@ class App:
 
     def preview(self, _=None):
         it = self.selected()
-        if not it:
+        if not it or it is self.edit_item:
             return
+        if not self.confirm_leave_edits():
+            return
+        self.edit_item = None
         if it["kind"] == "transcript":
             try:
                 text = ys.read_text(it["path"])
+                self.edit_item = it
             except OSError:
                 text = "(this file is no longer there)"
-        elif it["kind"] == "wav":
+            self.load_editor(text if self.edit_item else "")
+            self.set_preview(text, markdown=True)
+            return
+        if it["kind"] == "wav":
             text = wav_info(it["path"]) if it["path"] and it["path"].exists() else "(this file is no longer there)"
         elif it["kind"] == "link":
             text = f"{it['title']}\n\n{it['text']}\n\nDouble-click to open it in your browser."
         else:
             text = f"{it['title']}\n\nSkipped: {it['text']}."
+        self.load_editor("")
         self.set_preview(text)
 
-    def set_preview(self, text):
+    def set_preview(self, text, markdown=False):
         self.empty_hint.place_forget() if text else self.empty_hint.place(relx=0.5, rely=0.5, anchor="center")
-        self.preview_text.configure(state="normal")
-        self.preview_text.delete("1.0", "end")
-        self.preview_text.insert("1.0", text)
-        self.preview_text.configure(state="disabled")
+        self.show_view(text, markdown)
+
+    def show_view(self, text, markdown=True):
+        """The rich-text view: Markdown rendered, read-only."""
+        t = self.preview_text
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        if markdown:
+            for run, tags in md_segments(text):
+                t.insert("end", run, tags)
+        else:
+            t.insert("1.0", text)
+        t.configure(state="disabled")
+        self.view_frame.tkraise()
+        self.editing = False
         self.run_search()
+
+    # ----- editing -----
+
+    def load_editor(self, text):
+        e = self.editor
+        e.delete("1.0", "end")
+        e.insert("1.0", text)
+        e.edit_reset()
+        e.edit_modified(False)
+        self.saved_text = text
+        self.update_edit_buttons()
+
+    def start_editing(self, _=None):
+        """Show the Markdown source for editing when the file pane is clicked."""
+        if not self.edit_item:
+            return None
+        if not self.editing:
+            self.editing = True
+            self.edit_frame.tkraise()
+            self.run_search()
+        self.editor.focus_set()
+        return "break"
+
+    def focus_moved(self, event):
+        """Show the rich-text view again once focus leaves the file pane."""
+        w = event.widget
+        if not self.editing or not isinstance(w, tk.Misc):
+            return
+        try:
+            inside = str(w).startswith(str(self.right_pane))
+        except Exception:
+            inside = False
+        if not inside:
+            self.show_view(self.editor_text(), markdown=True)
+
+    def editor_text(self) -> str:
+        return self.editor.get("1.0", "end-1c")
+
+    def dirty(self) -> bool:
+        return bool(self.edit_item) and self.editor_text() != self.saved_text
+
+    def edit_changed(self, _=None):
+        self.editor.edit_modified(False)
+        self.update_edit_buttons()
+
+    def update_edit_buttons(self):
+        editable = bool(self.edit_item)
+        for b in (self.replace_btn, self.replace_all_btn):
+            b.set_enabled(editable)
+        self.undo_btn.set_enabled(editable and self.can("canundo"))
+        self.redo_btn.set_enabled(editable and self.can("canredo"))
+        if self.dirty():
+            self.save_btn.set_text("Save")
+            self.save_btn.set_enabled(True)
+        else:
+            self.save_btn.set_text("Saved")
+            self.save_btn.set_enabled(False)
+
+    def can(self, what) -> bool:
+        try:
+            return bool(self.editor.tk.call(self.editor._w, "edit", what))
+        except tk.TclError:
+            return True  # older Tk can't say; let the button try
+
+    def undo(self):
+        self.start_editing()
+        try:
+            self.editor.edit_undo()
+        except tk.TclError:
+            pass
+        self.after_edit()
+
+    def redo(self):
+        self.start_editing()
+        try:
+            self.editor.edit_redo()
+        except tk.TclError:
+            pass
+        self.after_edit()
+
+    def after_edit(self):
+        self.update_edit_buttons()
+        if self.text_search.get():
+            self.run_search()
+
+    def replace_one(self):
+        needle, repl = self.text_search.get(), self.replace_box.get()
+        if not self.edit_item or not needle:
+            return
+        self.start_editing()
+        self.run_search()
+        if not self.matches:
+            return
+        off = self.matches[self.match_i]
+        with self.one_undo_step():
+            self.editor.delete(self.index_of(off), self.index_of(off + len(needle)))
+            self.editor.insert(self.index_of(off), repl)
+        keep = self.match_i
+        self.run_search()
+        if self.matches:
+            self.match_i = min(keep, len(self.matches) - 1)
+            self.show_match()
+        self.update_edit_buttons()
+
+    def replace_all(self):
+        needle, repl = self.text_search.get(), self.replace_box.get()
+        if not self.edit_item or not needle:
+            return
+        self.start_editing()
+        text = self.editor_text()
+        count = len(find_matches(text, needle))
+        if not count:
+            return
+        new = re.sub(re.escape(needle), lambda m: repl, text, flags=re.IGNORECASE)
+        with self.one_undo_step():
+            self.editor.delete("1.0", "end")
+            self.editor.insert("1.0", new)
+        self.run_search()
+        self.update_edit_buttons()
+        self.stage = f"Replaced {count} {'match' if count == 1 else 'matches'}."
+        self.update_status()
+
+    def one_undo_step(self):
+        """Group a delete-and-insert so a single Undo reverses it."""
+        import contextlib
+        e = self.editor
+
+        @contextlib.contextmanager
+        def group():
+            e.configure(autoseparators=False)
+            e.edit_separator()
+            try:
+                yield
+            finally:
+                e.edit_separator()
+                e.configure(autoseparators=True)
+        return group()
+
+    def save_file(self):
+        if not self.dirty():
+            return
+        text = self.editor_text()
+        try:
+            ys.write_atomic(self.edit_item["path"], text)
+        except OSError as e:
+            messagebox.showerror(APP_NAME, f"Could not save {self.edit_item['path'].name}: {e.strerror}")
+            return
+        self.saved_text = text
+        self.update_edit_buttons()
+        self.stage = f"Saved {self.edit_item['path'].name}."
+        self.update_status()
+
+    def confirm_leave_edits(self) -> bool:
+        """Before leaving a file with unsaved changes: save, discard, or stay."""
+        if not self.dirty():
+            return True
+        ans = messagebox.askyesnocancel(APP_NAME, f"Save your changes to {self.edit_item['title']}?")
+        if ans is None:
+            prev = next((i for i, it in enumerate(self.items) if it is self.edit_item), None)
+            if prev is not None and self.tree.exists(str(prev)):
+                self.tree.selection_set(str(prev))
+            return False
+        if ans:
+            self.save_file()
+        return True
+
+    def active_text(self):
+        return self.editor if self.editing else self.preview_text
 
     def schedule_search(self):
         """Search shortly after typing stops, not on every keystroke."""
@@ -1048,7 +1352,7 @@ class App:
 
     def run_search(self):
         self._search_job = None
-        t = self.preview_text
+        t = self.active_text()
         t.tag_remove("match", "1.0", "end")
         t.tag_remove("current", "1.0", "end")
         needle = self.text_search.get()
@@ -1075,7 +1379,7 @@ class App:
         return "break"
 
     def show_match(self):
-        t = self.preview_text
+        t = self.active_text()
         t.tag_remove("current", "1.0", "end")
         needle = self.text_search.get()
         if not needle:
@@ -1311,7 +1615,7 @@ class App:
         folder = self.current_folder or self.ask_folder()
         if not folder:
             return
-        if not (folder / ys.DIR_TRANSCRIPTS).is_dir() or not any((folder / ys.DIR_TRANSCRIPTS).glob("*.txt")):
+        if not (folder / ys.DIR_TRANSCRIPTS).is_dir() or not any((folder / ys.DIR_TRANSCRIPTS).glob(f"*{ys.TRANSCRIPT_EXT}")):
             messagebox.showinfo(APP_NAME, "There are no transcripts in this folder yet. Slurp a channel or "
                                           "playlist first.")
             return
@@ -1529,6 +1833,8 @@ class App:
         save_settings(self.settings)
 
     def on_close(self):
+        if not self.closed and not self.confirm_leave_edits():
+            return
         if self.busy():
             if not messagebox.askyesno(APP_NAME, "yt-slurp is still working. Stop it and close? "
                                                  "Progress so far is saved."):

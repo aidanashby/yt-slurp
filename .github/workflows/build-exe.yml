@@ -25,6 +25,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install . pytest pyinstaller
 
+      - name: Install ffmpeg with yt-slurp's own downloader
+        run: |
+          python -c "import yt_slurp_setup as s; s.install_tool('ffmpeg'); print(s.tools_dir())"
+          "$env:LOCALAPPDATA\yt-slurp\tools" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
       - name: Test
         run: python -m pytest -q
 
