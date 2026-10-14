@@ -1,5 +1,14 @@
 # yt-slurp: pre-release review and test report
 
+> **Update, 14th October 2026 (0.2.0).** Since this review:
+> - `yt-slurp.bat` was replaced by a self-contained `yt-slurp.exe`. GitHub Actions builds it on Windows, runs all 128 tests there, and checks that it starts. It has run on the owner's laptop.
+> - The `.exe` downloads ffmpeg and Deno over HTTPS and checks published SHA-256 checksums. Tested here with simulated downloads, including a tampered one, which was refused.
+> - The Update button replaces the `.exe` with the release asset from this repository.
+> - Transcripts are Markdown, and the file pane can edit them; saving writes only the open transcript.
+> - The interface says "transcription app" rather than "Whisper app".
+>
+> The findings below still apply, apart from the rows about `yt-slurp.bat`.
+
 13th October 2026. Review done before making the repository public.
 
 ## Summary

@@ -4,7 +4,7 @@ Last updated: 13th October 2026 (pre-release review)
 
 ## Where it is
 
-yt-slurp is now a single self-contained `yt-slurp.exe`, built on GitHub's Windows machines and attached to each release. It replaces `yt-slurp.bat`. The window, pipeline and first-run setup pass their offline tests here, and a Linux build of the bundle starts cleanly. The Windows `.exe` itself is built and smoke-started by the GitHub workflow, but it has not yet been tried on a real desktop, and live YouTube requests are still untested. Next: publish release v0.2.0 and try it (see "Next" below).
+yt-slurp 0.2.0 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works. Live use on more channels, the first-run downloads on a clean machine and the Update button (needs a later release to test) are the next things to watch.
 
 ## Done
 
@@ -33,7 +33,7 @@ yt-slurp is now a single self-contained `yt-slurp.exe`, built on GitHub's Window
   - update and fresh re-runs, cookie retry, bot-check pause, a run lock per folder, and a clean stop.
   The command line (`yt-slurp ...`) still works.
 - **Pre-release review** (see `docs/TEST-REPORT.md`): keyboard access and WCAG AA contrast throughout the window, a symbol as well as a colour for each kind of result, video IDs validated before use in any path, damaged settings files tolerated, and a fix for very slow search highlighting in long transcripts.
-- **Tests:** 108 pytest tests, covering the pure functions, offline end-to-end runs, negative and edge cases, and the window driving a run, chips, filters, search, auto-scroll, Pause/Resume, settings and an automatic merge.
+- **Tests:** 128 pytest tests (also run on Windows by the build workflow), covering the pure functions, offline end-to-end runs, negative and edge cases, first-run setup and updates, and the window driving a run, chips, filters, search, the editor, auto-scroll, Pause/Resume, settings and an automatic merge.
 
 ## Decisions taken
 
@@ -50,41 +50,35 @@ yt-slurp is now a single self-contained `yt-slurp.exe`, built on GitHub's Window
 - Signed-in videos use browser cookies only for the retry at the end of a run.
 - Closing a question dialog picks the cautious answer: keep what exists, or don't use a browser.
 
-## Not yet tested (needs your laptop)
+## Not yet tested
 
-- `yt-slurp.exe` on a real Windows desktop: first-run downloads, the Update button, the SmartScreen prompt.
-- Any live YouTube request.
+- The Update button end to end. It needs a release newer than 0.2.0 to update to.
+- First-run downloads of ffmpeg and Deno on a machine that has neither.
+- Reading browser cookies for members-only or age-restricted videos.
 - Whether your transcription app's save dialog keeps the `[ID]` brackets (use the smoke test before the first real WAVs).
-- Reading browser cookies, and the Launch transcription app button.
 
-## Next: first run of the .exe
+## Making a release
 
-### 1. Publish the release
+1. Bump `__version__` in `yt_slurp.py` and add a section to `CHANGELOG.md`; commit and push.
+2. On GitHub, go to **Releases**, then **Draft a new release**. Create the tag (for example `v0.2.1`) on publish, set the title, paste the changelog section, and select **Publish release**.
+3. The workflow builds `yt-slurp.exe` and attaches it to the release in a few minutes. Running copies then show the Update button.
 
-On GitHub, go to **Releases**, then **Draft a new release**. Type the tag `v0.2.0`, choose **Create new tag: v0.2.0 on publish**, set the title to `yt-slurp 0.2.0`, paste the 0.2.0 notes from `CHANGELOG.md`, and select **Publish release**. About five minutes later, the build attaches `yt-slurp.exe` to the release (watch it under **Actions**).
+## Next: using it
 
-### 2. Download and run it
+### 1. Set up the window once
 
-1. Download `yt-slurp.exe` from the release, and move it somewhere you'll keep it.
-2. Double-click it. If "Windows protected your PC" appears, select **More info**, then **Run anyway**.
-3. If ffmpeg or Deno is missing, yt-slurp offers to download them. Select **Yes**.
-4. Your settings from the old version carry over, including your results folder.
-5. The old repository folder with `.venv` is no longer needed to run yt-slurp.
-
-### 3. Set up the window once
-
-1. Click **Settings** in the menu bar. Under **Transcription app**, click **Choose the transcription app...** and pick the file you use to start it (its .exe, .bat, .py or shortcut).
+1. Click **Settings** in the menu bar. Under **Transcription app**, click **Choose the transcription app...** and pick the file you use to start it (its .exe, .bat, .py or shortcut; this is your transcription app, not yt-slurp).
 2. Check **Word in its window title** matches a word in the app's title bar (left blank, the app's filename is used). yt-slurp uses this to bring the app forward instead of starting a second copy. Click **Save**.
 3. Tools menu, **Run the self-test**. It should say "Self-test passed".
 
-### 4. Smoke test (before the first real WAVs)
+### 2. Smoke test (before the first real WAVs)
 
 1. Tools menu, **Check the transcription app keeps filenames**. Two short test WAVs are made and their folder opens.
 2. Click **Launch transcription app**, and drag both WAVs into it. Transcribe them.
 3. Click **Save as .txt** for each, and save into the `whisper-transcripts` folder the message names. Keep the suggested name.
 4. Within a few seconds yt-slurp says **Test passed**. If nothing happens, the app changed the filenames: send Claude the saved names.
 
-### 5. Live tests
+### 3. Live tests
 
 In Settings, tick **Test run: only do the first few videos** (5 is fine) for these.
 
@@ -94,13 +88,13 @@ In Settings, tick **Test run: only do the first few videos** (5 is fine) for the
 4. **A non-English video with no English captions**, in a playlist the same way. It should appear under Skipped with the reason "not in English, no captions".
 5. **Optional: a members-only or age-restricted video.** At the end of the run, yt-slurp asks which browser to use. Sign in to YouTube in Firefox first, then choose Firefox.
 
-### 6. What to send Claude
+### 4. What to send Claude
 
 - Anything that looked wrong, and the messages in the box at the bottom of the window (click in it, press Ctrl+A, then Ctrl+C).
 - If the window shows "Something went wrong", the file it names (`error.log`).
 - For a failed video: Tools, **Open the manifest in Excel**, and copy its row.
 
-### 7. If something goes wrong
+### 5. If something goes wrong
 
 | What you see | What to do |
 |---|---|
