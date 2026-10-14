@@ -2,7 +2,7 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
-## Unreleased
+## 0.2.1 (14th October 2026)
 
 ### Added
 - Select several results (Shift or Ctrl+click): see which can be edited, then find and replace across all the selected transcripts and save them together.

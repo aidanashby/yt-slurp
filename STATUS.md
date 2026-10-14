@@ -1,10 +1,10 @@
 # yt-slurp: status
 
-Last updated: 13th October 2026 (pre-release review)
+Last updated: 14th October 2026 (0.2.1 release)
 
 ## Where it is
 
-yt-slurp 0.2.0 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works. Live use on more channels, the first-run downloads on a clean machine and the Update button (needs a later release to test) are the next things to watch.
+yt-slurp 0.2.1 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works. Live use on more channels, the first-run downloads on a clean machine and the Update button (needs a later release to test) are the next things to watch.
 
 ## Done
 
