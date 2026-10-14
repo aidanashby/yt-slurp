@@ -26,7 +26,7 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 # =============================================================================
 # Constants
