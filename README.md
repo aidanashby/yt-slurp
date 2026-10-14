@@ -145,7 +145,7 @@ Select **Settings** in the menu bar. Settings are saved for next time.
 | "Cannot read browser cookies" | Chrome, Edge and Brave lock their cookies while open. Close the browser completely (check the system tray), or sign in to YouTube in Firefox and choose Firefox |
 | "Confirm you're not a bot" | YouTube is limiting requests. Wait an hour, choose a slower pace in Settings, and slurp the same link again |
 | Videos marked as failed | On the **Tools** menu, select **Open the manifest in Excel** and read the error column. Slurping the same link again retries them |
-| "Something went wrong" | The message names a log file, `error.log`. Include it when reporting a problem |
+| "Something went wrong" | yt-slurp saves the details to `error.log` in `%APPDATA%\yt-slurp` and offers to open that folder. If it keeps happening, [report it on GitHub](https://github.com/aidanashby/yt-slurp/issues) and attach the file |
 
 ## Privacy and responsible use
 

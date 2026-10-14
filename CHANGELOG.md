@@ -2,6 +2,13 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
+## 0.1.1 (14th October 2026)
+
+### Fixed
+- Clicking Slurp while a result was selected crashed with "list index out of range".
+- Slurping a channel again with nothing new showed an empty list; it now shows what earlier runs made.
+- The error message now says where the log is saved, offers to open its folder, and points to GitHub Issues.
+
 ## 0.1.0 (13th October 2026)
 
 First public release.

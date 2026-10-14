@@ -916,6 +916,10 @@ class App:
             self.show_counts(ys.Manifest(man).counts())
 
     def clear_items(self):
+        # Clear the on-screen rows first, so no selection points at a result
+        # that no longer exists.
+        self.tree.selection_remove(*self.tree.selection())
+        self.tree.delete(*self.tree.get_children())
         self.items, self.keys, self.current_folder = [], set(), None
         self.redraw()
 
@@ -932,8 +936,10 @@ class App:
             if self.visible(it):
                 self.tree.insert("", "end", iid=str(i), text=row_text(it), tags=(it["kind"],))
         self.update_chip_counts()
-        if sel is not None and str(self.items.index(sel)) in self.tree.get_children():
-            self.tree.selection_set(str(self.items.index(sel)))
+        if sel is not None:
+            idx = next((i for i, it in enumerate(self.items) if it is sel), None)
+            if idx is not None and self.tree.exists(str(idx)):
+                self.tree.selection_set(str(idx))
 
     def update_chip_counts(self):
         for kind, chip in self.chips.items():
@@ -963,7 +969,12 @@ class App:
 
     def selected(self):
         sel = self.tree.selection()
-        return self.items[int(sel[0])] if sel else None
+        if not sel:
+            return None
+        try:
+            return self.items[int(sel[0])]
+        except (ValueError, IndexError):
+            return None  # a row left over from before the list changed
 
     # ----- content pane -----
 
@@ -1184,7 +1195,9 @@ class App:
                 self.update_status()
         elif kind == "counts":
             _, folder, counts = msg
-            if self.current_folder in (None, folder):
+            if self.current_folder is None and self.busy():
+                self.show_folder(folder)  # show what an earlier run already made
+            if self.current_folder == folder:
                 self.show_counts(counts)
         elif kind == "item":
             _, ikind, folder, path, text, title = msg
@@ -1695,9 +1708,18 @@ def report_crash(exc_type, exc, tb) -> None:
     except OSError:
         pass
     try:
-        messagebox.showerror(APP_NAME, f"Something went wrong:\n\n{exc}\n\nThe details are in {log}. "
-                                       "Send that file to Claude.")
-    except tk.TclError:
+        if messagebox.askyesno(
+                APP_NAME,
+                f"Something went wrong: {exc}\n\n"
+                f"yt-slurp has saved the details to:\n{log}\n\n"
+                "If the problem keeps happening, please report it on GitHub "
+                "(github.com/aidanashby/yt-slurp/issues) and attach that file.\n\n"
+                "Open the folder with the log now?", icon="error"):
+            if os.name == "nt":
+                os.startfile(str(log.parent))
+            else:
+                subprocess.Popen(["xdg-open", str(log.parent)])
+    except (tk.TclError, OSError):
         pass
 
 

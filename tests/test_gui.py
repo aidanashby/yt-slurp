@@ -208,3 +208,20 @@ def test_text_index_matches_tk():
     starts = gui.line_starts(text)
     assert [gui.text_index(starts, o) for o in (0, 2, 3, 5, 7, 8, 9)] == \
         ["1.0", "1.2", "2.0", "2.2", "3.0", "4.0", "4.1"]
+
+
+def test_slurp_again_with_a_result_selected(app):
+    """The crash from the field: select a result, then Slurp again."""
+    run_fake(app)
+    app.tree.selection_set(app.tree.get_children()[-1])
+    app.root.update()
+    app.settings["min_minutes"] = 1
+    run_fake(app)
+    assert len(app.items) > 0
+
+
+def test_selected_survives_a_stale_row(app):
+    run_fake(app)
+    app.tree.selection_set(app.tree.get_children()[-1])
+    app.items = []  # the list changed underneath the selection
+    assert app.selected() is None
