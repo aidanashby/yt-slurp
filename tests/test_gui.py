@@ -385,3 +385,14 @@ def test_multi_select_replace_and_delete(app, monkeypatch):
     app.root.update()
     app.delete_selected()
     assert not path.exists()
+
+
+def test_button_grows_to_fit_longer_text(app):
+    import yt_slurp_gui as gui
+    btn = gui.RoundButton(app.root, "Update", None)
+    btn.set_text("Update to 10.20.30")
+    need = gui.tkfont.Font(font=btn.font).measure("Update to 10.20.30")
+    assert btn.w >= need + 10 and int(btn.cget("width")) == btn.w
+    btn.set_text("Up")
+    assert int(btn.cget("width")) == btn.w  # shrinking text keeps the width
+    btn.destroy()

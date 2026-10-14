@@ -2,6 +2,11 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
+## Unreleased
+
+### Fixed
+- The Update button now widens to fit "Update to (version)" instead of cutting the text off.
+
 ## 0.2.1 (14th October 2026)
 
 ### Added

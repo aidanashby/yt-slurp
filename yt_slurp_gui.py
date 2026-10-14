@@ -19,6 +19,7 @@ import tkinter as tk
 import wave
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
 try:  # plays WAV files on Windows; the Play button is hidden elsewhere
     import winsound
@@ -506,7 +507,7 @@ class RoundButton(tk.Canvas):
 
     def __init__(self, parent, text, command, colour=SLATE, hover=SLATE_DARK, fg="white",
                  width=None, height=34, font=(FONT, 10), bg=BG, pad=28):
-        self.font = font
+        self.font, self.pad, self.fixed_width = font, pad, width is not None
         tmp = tk.Label(parent, text=text, font=font)
         w = width or tmp.winfo_reqwidth() + pad
         tmp.destroy()
@@ -539,6 +540,11 @@ class RoundButton(tk.Canvas):
 
     def set_text(self, text):
         self.text = text
+        if not self.fixed_width:  # grow to fit longer text, never shrink, so buttons don't jump
+            need = tkfont.Font(font=self.font).measure(text) + self.pad
+            if need > self.w:
+                self.w = need
+                self.configure(width=need)
         self.draw(self.colour if self.enabled else DISABLED)
 
     def set_enabled(self, on: bool):
