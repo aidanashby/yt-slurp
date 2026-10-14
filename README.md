@@ -3,7 +3,7 @@
 yt-slurp collects the transcripts of every video on a YouTube channel or playlist, so you can give them to an AI assistant such as Claude or Gemini Notebook (formerly NotebookLM) for research and analysis. Paste a link and click **Slurp**:
 - Videos with captions become clean, readable text files, each headed with the title, channel, date, length and link.
 - Videos without captions become audio files, ready for a transcription app such as one based on Whisper.
-- yt-slurp then bundles everything into files sized for Claude and for Gemini Notebook.
+- Add the transcripts to Claude or ChatGPT as they are. For Gemini Notebook, which limits how many sources a notebook can hold, one click bundles them into files that fit.
 
 It runs on Windows 10 and 11, and works on your own computer. It has no account, server or subscription.
 
@@ -101,8 +101,7 @@ Each channel or playlist gets its own folder inside `output`. To open it, select
 | Item | What it is |
 |---|---|
 | `transcripts` | One text file per video, named `Title [video ID] date.txt` |
-| `claude-parts` | All transcripts in upload-date order, joined into files of up to 100,000 words each, to attach to Claude |
-| `gemini-notebook` | The same transcripts arranged for Gemini Notebook: one file per video if there are 50 or fewer, otherwise 50 files of roughly equal size |
+| `gemini-notebook` | Made only when you select **Make Gemini Notebook files**: the transcripts arranged for Gemini Notebook, in upload-date order. One file per video if there are 50 or fewer, otherwise 50 files of roughly equal size |
 | `links.txt` | The address of every video, one per line |
 | `needs-transcription` | WAV files waiting for your transcription app |
 | `whisper-transcripts` | Where you save your transcription app's text |
@@ -117,6 +116,11 @@ Each channel or playlist gets its own folder inside `output`. To open it, select
 
 Members-only and age-restricted videos are listed as needing sign-in. At the end of a run, yt-slurp offers to retry them using your browser's YouTube sign-in.
 
+## Using the transcripts with an AI assistant
+
+- **Claude or ChatGPT.** Add the files from the `transcripts` folder to a project, as they are. Each file starts with the video's title, channel, date and link, so answers can cite the video.
+- **Gemini Notebook.** A notebook holds a limited number of sources (50 on the free plan), so a big channel needs bundling. After a slurp, select **Make Gemini Notebook files**. yt-slurp combines the transcripts into files that fit and opens the folder; add those files to your notebook. Run it again after later slurps to include new transcripts.
+
 ## Settings
 
 Select **Settings** in the menu bar. Settings are saved for next time.
@@ -130,7 +134,7 @@ Select **Settings** in the menu bar. Settings are saved for next time.
 | Pace | How long to wait between requests to YouTube: Normal (2 to 5 seconds), Slow (5 to 10) or Very slow (10 to 20). Slower is gentler on YouTube for very large channels |
 | Where things go | The results folder |
 | Transcription app | Where the app is, and a word from its window title (if left blank, its filename is used), so **Launch transcription app** brings an open copy to the front instead of starting a second one |
-| Advanced | File sizes for Claude and Gemini Notebook |
+| Gemini Notebook files | How many files to make, and the most words in each |
 
 ## Troubleshooting
 
@@ -163,6 +167,7 @@ yt-slurp https://www.youtube.com/@SomeChannel
 yt-slurp "https://www.youtube.com/playlist?list=PL..."
 yt-slurp --file urls.txt
 yt-slurp merge "output\Some Channel"
+yt-slurp gemini "output\Some Channel"
 yt-slurp smoke-wav
 yt-slurp gui
 ```
@@ -184,9 +189,8 @@ yt-slurp gui
 | `--chunk-minutes N` | 60 | Split longer audio into parts; 0 turns splitting off |
 | `--cookies-from-browser B` | ask | `chrome`, `edge`, `firefox`, `brave` or `none` |
 | `--limit N` | all | Only the first N videos |
-| `--chunk-words N` | 100000 | Words per Claude file |
-| `--max-sources N` | 50 | Number of Gemini Notebook files |
-| `--max-source-words N` | 400000 | Words per Gemini Notebook file |
+| `--max-sources N` | 50 | `gemini` only: number of Gemini Notebook files |
+| `--max-source-words N` | 400000 | `gemini` only: words per Gemini Notebook file |
 | `--delete-wavs` | off | `merge` only: delete a video's WAV files once merged |
 
 ## For developers

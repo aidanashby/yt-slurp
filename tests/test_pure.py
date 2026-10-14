@@ -272,8 +272,8 @@ def test_stitch_parts_order_and_missing():
 
 # ----- combined files -----
 
-def test_group_for_claude_never_splits_and_isolates_oversize():
-    assert ys.group_for_claude([40, 40, 40, 150, 10], 100) == [[0, 1], [2], [3], [4]]
+def test_pack_groups_never_splits_and_isolates_oversize():
+    assert ys.pack_groups([40, 40, 40, 150, 10], 100) == [[0, 1], [2], [3], [4]]
 
 
 def test_group_for_gemini_one_per_video_when_within_limits():
@@ -308,15 +308,15 @@ def test_split_transcript_repeats_header():
     assert sum(p.count("w") for p in pieces) == 3000
 
 
-def test_build_combined_end_to_end(tmp_path):
+def test_build_gemini_end_to_end(tmp_path):
     t = tmp_path / ys.DIR_TRANSCRIPTS
     t.mkdir()
     for i, date in enumerate(["2024-01-01", "2023-05-05", "2024-06-01"]):
         (t / f"V{i} [{'a' * 10}{i}] {date}.txt").write_text(f"Title: V{i}\n\n" + "word " * 50, encoding="utf-8")
-    stats = ys.build_combined(tmp_path, chunk_words=120, max_sources=2, max_source_words=1000)
-    claude = sorted((tmp_path / ys.DIR_CLAUDE).iterdir())
+    stats = ys.build_gemini(tmp_path, max_sources=2, max_source_words=1000)
     gemini = sorted((tmp_path / ys.DIR_GEMINI).iterdir())
-    assert stats["videos"] == 3 and len(claude) == 2 and len(gemini) == 2
-    first = claude[0].read_text(encoding="utf-8")
+    assert stats["videos"] == 3 and len(gemini) == 2
+    first = gemini[0].read_text(encoding="utf-8")
     assert first.index("Title: V1") < first.index("Title: V0")  # upload-date order
     assert gemini[0].name.startswith("01 of 02 2023-05-05 to")
+    assert not (tmp_path / "claude-parts").exists()

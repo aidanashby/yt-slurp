@@ -125,6 +125,9 @@ def test_full_pipeline(fake, monkeypatch):
     assert merged.endswith("First part.\n\nMore.\n\nSecond part.\n")
     assert "Transcript: Whisper" in merged
     assert not list((folder / "needs-transcription").glob("*.wav"))
+    assert not (folder / "gemini-notebook").exists()  # bundling is a separate step now
+    assert not (folder / "claude-parts").exists()
+    assert ys.main(["gemini", str(folder)]) == 0
     assert len(list((folder / "gemini-notebook").iterdir())) == 2
 
     # Update with cookies retries the members-only video
@@ -172,15 +175,15 @@ def test_outputs_rewritten_each_round(fake, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt="": "none")
     monkeypatch.setattr(ys, "ROUND_SIZE", 2)
     seen = []
-    real = ys.build_combined
+    real = ys.write_links
 
-    def spy(folder, *a, **k):
-        seen.append(len(list((folder / "transcripts").glob("*.txt"))) if (folder / "transcripts").exists() else 0)
-        return real(folder, *a, **k)
+    def spy(folder, manifest):
+        seen.append(len(manifest.rows))
+        return real(folder, manifest)
 
-    monkeypatch.setattr(ys, "build_combined", spy)
+    monkeypatch.setattr(ys, "write_links", spy)
     assert run() == 0
-    assert len(seen) >= 2  # rewritten after each round, not only at the end
+    assert len(seen) >= 3  # rewritten after each round, not only at the end
 
 
 def test_migrate_names_from_older_versions(tmp_path):
@@ -193,3 +196,8 @@ def test_migrate_names_from_older_versions(tmp_path):
     assert (tmp_path / "needs-transcription" / "Talk [nocap000002] 2024-01-03 part 01 of 02.wav").exists()
     assert not (tmp_path / "needs-transcription" / "batch 01").exists()
     assert (tmp_path / "transcripts" / "Other [capt0000001] 2024-01-02.txt").exists()
+
+
+def test_gemini_command_needs_transcripts(fake):
+    (fake / "empty").mkdir()
+    assert ys.main(["gemini", str(fake / "empty")]) == 2

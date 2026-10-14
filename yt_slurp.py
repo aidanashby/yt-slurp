@@ -47,7 +47,6 @@ GEMINI_MAX_WORDS_PER_SOURCE = 500_000
 
 DEFAULT_MAX_SOURCES = GEMINI_MAX_SOURCES_FREE
 DEFAULT_MAX_SOURCE_WORDS = 400_000  # margin below the limit: Google may count words differently
-DEFAULT_CHUNK_WORDS = 100_000       # per claude-parts file
 DEFAULT_MIN_MINUTES = 5
 DEFAULT_LANG = "en"
 DEFAULT_WAV_RATE = 16_000
@@ -78,7 +77,7 @@ SHORTS_MAX_S = 180  # YouTube Shorts are at most 3 minutes
 # Network politeness and retries.
 PACES = {"normal": (2.0, 5.0), "slow": (5.0, 10.0), "very-slow": (10.0, 20.0)}
 DELAY_RANGE_S = PACES["normal"]  # set from --pace at the start of a run
-ROUND_SIZE = 10  # videos per round; links and combined files are rewritten after each
+ROUND_SIZE = 10  # videos per round; links and the WAV list are rewritten after each
 RETRY_DELAYS_S = (10, 20, 40, 80, 160)
 BOT_CHECK_LIMIT = 3  # consecutive "confirm you're not a bot" errors before pausing
 CAPTION_INFO_MAX_AGE_S = 3 * 3600  # caption URLs in cached metadata expire
@@ -104,7 +103,6 @@ WINDOWS_RESERVED = {
 DIR_TRANSCRIPTS = "transcripts"
 DIR_NEEDS = "needs-transcription"
 DIR_WHISPER = "whisper-transcripts"
-DIR_CLAUDE = "claude-parts"
 DIR_GEMINI = "gemini-notebook"
 DIR_WORK = ".work"
 
@@ -644,14 +642,14 @@ def stitch_parts(texts: dict[int, str], parts: int) -> tuple[str | None, list[in
 
 
 # =============================================================================
-# Pure helpers: combined files
+# Pure helpers: Gemini Notebook files
 # =============================================================================
 
-def group_for_claude(word_counts: list[int], chunk_words: int) -> list[list[int]]:
-    """Consecutive groups of at most chunk_words; a larger video gets its own group."""
+def pack_groups(word_counts: list[int], max_words: int) -> list[list[int]]:
+    """Consecutive groups of at most max_words; a larger item gets its own group."""
     groups, cur, size = [], [], 0
     for i, wc in enumerate(word_counts):
-        if cur and size + wc > chunk_words:
+        if cur and size + wc > max_words:
             groups.append(cur)
             cur, size = [], 0
         cur.append(i)
@@ -694,7 +692,7 @@ def group_for_gemini(word_counts: list[int], max_sources: int, max_words: int) -
         return [[i] for i in range(n)], 0
     groups = _balanced_groups(word_counts, min(n, max_sources))
     if any(sum(word_counts[i] for i in g) > max_words for g in groups):
-        groups = group_for_claude(word_counts, max_words)
+        groups = pack_groups(word_counts, max_words)
     return groups, max(0, len(groups) - max_sources)
 
 
@@ -1697,16 +1695,13 @@ class SourceRun:
                         break
             finally:
                 self.save()
-                self.write_outputs(combined=False)
+                self.write_outputs()
 
-    def write_outputs(self, combined: bool = True) -> None:
-        """Bring links.txt, the WAV list and the combined files up to date."""
+    def write_outputs(self) -> None:
+        """Bring links.txt and the WAV list up to date."""
         if not self.args.no_links:
             write_links(self.folder, self.manifest)
         write_needs_list(self.folder, self.manifest)
-        if combined and not self.args.links_only:
-            build_combined(self.folder, self.args.chunk_words, self.args.max_sources,
-                           self.args.max_source_words, self.manifest)
 
     def save(self) -> None:
         self.manifest.save()
@@ -1773,31 +1768,25 @@ def write_needs_list(folder: Path, manifest: Manifest) -> None:
 # Combined files
 # =============================================================================
 
-def build_combined(folder: Path, chunk_words: int, max_sources: int, max_source_words: int,
-                   manifest: Manifest | None = None) -> dict:
-    """Rebuild claude-parts/ and gemini-notebook/ from transcripts/, in upload-date order."""
+def build_gemini(folder: Path, max_sources: int, max_source_words: int,
+                 manifest: Manifest | None = None) -> dict:
+    """Bundle transcripts/ into gemini-notebook/, in upload-date order, within
+    Gemini Notebook's limits on sources per notebook and words per source.
+
+    Gemini Notebook is the only target that needs this: Claude and ChatGPT
+    projects take the per-video transcripts as they are."""
     tdir = folder / DIR_TRANSCRIPTS
     if manifest is None and (folder / "manifest.csv").exists():
         manifest = Manifest(folder / "manifest.csv")
     files = sorted(tdir.glob("*.txt"), key=lambda p: transcript_sort_key(p.name, manifest)) if tdir.is_dir() else []
     texts = [read_text(p).strip() for p in files]
-    name = folder.name
-    for d in (DIR_CLAUDE, DIR_GEMINI):
-        if (folder / d).exists():
-            shutil.rmtree(folder / d)
+    if (folder / DIR_GEMINI).exists():
+        shutil.rmtree(folder / DIR_GEMINI)
     if not texts:
-        return {"videos": 0, "claude": 0, "gemini": 0, "gemini_over": 0, "oversize": []}
+        return {"videos": 0, "gemini": 0, "gemini_over": 0}
 
     joiner = f"\n\n{SEPARATOR}\n\n"
-    counts = [len(t.split()) for t in texts]
-    oversize = [files[i].name for i, wc in enumerate(counts) if wc > chunk_words]
-
-    groups = group_for_claude(counts, chunk_words)
-    for n, g in enumerate(groups, 1):
-        write_atomic(folder / DIR_CLAUDE / f"{name} part {n:02d} of {len(groups):02d}.txt",
-                     joiner.join(texts[i] for i in g) + "\n")
-
-    # Gemini: split any video over the hard per-source limit into sections first.
+    # Split any video over the hard per-source limit into sections first.
     limit = min(max_source_words, GEMINI_MAX_WORDS_PER_SOURCE)
     items, item_files = [], []
     for f, t in zip(files, texts):
@@ -1815,8 +1804,7 @@ def build_combined(folder: Path, chunk_words: int, max_sources: int, max_source_
             last = file_date(item_files[g[-1]].name)
             fname = f"{n:02d} of {len(ggroups):02d} {first} to {last}.txt"
         write_atomic(folder / DIR_GEMINI / fname, joiner.join(items[i] for i in g) + "\n")
-    return {"videos": len(texts), "claude": len(groups), "gemini": len(ggroups),
-            "gemini_over": over, "oversize": oversize}
+    return {"videos": len(texts), "gemini": len(ggroups), "gemini_over": over}
 
 
 def file_date(name: str) -> str:
@@ -1832,14 +1820,11 @@ def transcript_sort_key(name: str, manifest: Manifest | None) -> tuple:
     return (date if date != "undated" else "9999", name.lower())
 
 
-def report_combined(stats: dict, args) -> None:
+def report_gemini(stats: dict, args) -> None:
     if not stats["videos"]:
-        say("No transcripts yet, so no combined files.")
+        say("No transcripts yet, so no Gemini Notebook files.")
         return
-    say(f"Combined {stats['videos']} transcripts: {stats['claude']} Claude parts, "
-        f"{stats['gemini']} Gemini Notebook sources.")
-    for name in stats["oversize"]:
-        say(f"  Warning: {name} is over {args.chunk_words:,} words, so it has a Claude part to itself.")
+    say(f"Made {stats['gemini']} Gemini Notebook files from {stats['videos']} transcripts.")
     if stats["gemini_over"]:
         say(f"  Warning: Gemini Notebook needs {stats['gemini']} sources, {stats['gemini_over']} over "
             f"the limit of {args.max_sources}. Use two notebooks or a paid plan.")
@@ -1941,7 +1926,7 @@ def _merge(folder: Path, args) -> None:
     waiting = [r for r in manifest.rows.values() if r["status"] == "wav"]
     if waiting:
         say(f"  {len(waiting)} videos still need Whisper transcripts.")
-    report_combined(build_combined(folder, args.chunk_words, args.max_sources, args.max_source_words), args)
+
 
 
 # =============================================================================
@@ -2062,15 +2047,12 @@ def signin_retry(runs: list[SourceRun], ctx: RunContext) -> None:
 # Summary
 # =============================================================================
 
-def summarise(run: SourceRun, combined: dict) -> None:
+def summarise(run: SourceRun) -> None:
     m = run.manifest
     counts = m.counts()
     say(f"\n{run.src.name}")
     say("  " + ", ".join(f"{s} {counts[s]}" for s in STATUSES if counts.get(s)))
     say(f"  Folder: {run.folder.resolve()}")
-    if combined["videos"]:
-        say(f"  Claude: {DIR_CLAUDE}/ ({combined['claude']} files)   "
-            f"Gemini Notebook: {DIR_GEMINI}/ ({combined['gemini']} files)")
     waiting = [r for r in m.rows.values() if r["status"] == "wav"]
     if waiting:
         nfiles = sum(int(r["wav_files"] or 0) for r in waiting)
@@ -2133,13 +2115,10 @@ def build_run_parser() -> argparse.ArgumentParser:
     p.add_argument("--cookies-from-browser", choices=[*BROWSERS, "none"],
                    help="browser for retrying sign-in videos, or none")
     p.add_argument("--limit", type=int, help="process only the first N videos")
-    add_combined_args(p)
     return p
 
 
-def add_combined_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--chunk-words", type=int, default=DEFAULT_CHUNK_WORDS,
-                   help=f"max words per Claude part (default {DEFAULT_CHUNK_WORDS})")
+def add_gemini_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--max-sources", type=int, default=DEFAULT_MAX_SOURCES,
                    help=f"max Gemini Notebook files (default {DEFAULT_MAX_SOURCES})")
     p.add_argument("--max-source-words", type=int, default=DEFAULT_MAX_SOURCE_WORDS,
@@ -2225,14 +2204,12 @@ def cmd_run(argv: list[str]) -> None:
 
     say("\nSummary")
     for run in runs:
-        combined = {"videos": 0}
-        if not args.links_only:
-            combined = build_combined(run.folder, args.chunk_words, args.max_sources, args.max_source_words)
-        summarise(run, combined)
-        if not args.links_only:
-            report_combined(combined, args)
-        else:
+        summarise(run)
+        if args.links_only:
             say(f"  Links: {run.folder.resolve() / 'links.txt'}")
+        elif (run.folder / DIR_TRANSCRIPTS).is_dir():
+            say(hint(f"  For Gemini Notebook, run: yt-slurp gemini \"{run.folder.resolve()}\"",
+                     "  For Gemini Notebook, click Make Gemini Notebook files."))
     for src in sources:
         if src.failed:
             say(f"\nNot listed: {src.url} ({src.failed})")
@@ -2240,15 +2217,30 @@ def cmd_run(argv: list[str]) -> None:
 
 def cmd_merge(argv: list[str]) -> None:
     p = argparse.ArgumentParser(prog="yt-slurp merge",
-                                description="Merge Whisper .txt files and rebuild the combined files.")
+                                description="Merge transcripts saved by your transcription app.")
     p.add_argument("folder", help="the output folder for one channel or playlist")
     p.add_argument("--delete-wavs", action="store_true", help="delete a video's WAVs once it merges")
-    add_combined_args(p)
     args = p.parse_args(argv)
     folder = Path(args.folder.strip('"'))
     if not folder.is_dir():
         raise Stop(f"No folder at {folder}.")
     merge(folder, args)
+
+
+def cmd_gemini(argv: list[str]) -> None:
+    p = argparse.ArgumentParser(prog="yt-slurp gemini",
+                                description="Bundle a folder's transcripts into files for Gemini Notebook.")
+    p.add_argument("folder", help="the output folder for one channel or playlist")
+    add_gemini_args(p)
+    args = p.parse_args(argv)
+    folder = Path(args.folder.strip('"'))
+    if not (folder / DIR_TRANSCRIPTS).is_dir():
+        raise Stop(f"No transcripts in {folder} yet. Slurp a channel or playlist first.")
+    with FolderLock(folder):
+        stats = build_gemini(folder, args.max_sources, args.max_source_words)
+    report_gemini(stats, args)
+    if stats["videos"]:
+        say(f"Files: {(folder / DIR_GEMINI).resolve()}")
 
 
 def cmd_smoke(argv: list[str]) -> None:
@@ -2277,6 +2269,8 @@ def run_command(argv: list[str]) -> int:
             cmd_merge(argv[1:])
         elif argv and argv[0] == "smoke-wav":
             cmd_smoke(argv[1:])
+        elif argv and argv[0] == "gemini":
+            cmd_gemini(argv[1:])
         else:
             cmd_run(argv)
     except KeyboardInterrupt:

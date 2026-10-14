@@ -251,3 +251,12 @@ def test_both_panes_show_a_scrollbar(app):
             if w.winfo_class() == "TScrollbar"]
     assert len(bars) == 2
     assert all(b.winfo_ismapped() and b.winfo_width() >= 5 for b in bars)
+
+
+def test_make_gemini_notebook_files_is_a_separate_step(app):
+    run_fake(app)
+    folder = app.current_folder
+    assert not (folder / ys.DIR_GEMINI).exists()
+    app.make_gemini()
+    pump(app, lambda: idle(app))
+    assert any((folder / ys.DIR_GEMINI).glob("*.txt"))

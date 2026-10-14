@@ -10,6 +10,7 @@ All notable changes to yt-slurp. Dates are in UK format.
 - Updates are checked after the window opens, not before; a blue **Update** button appears in the menu bar when a new version is out, and installs it with a restart.
 - The menu bar is now drawn by yt-slurp so it can hold the Update button. Help has "Check for updates" and "About".
 - "Whisper app" is now "transcription app" throughout, so any transcription app fits.
+- Slurps no longer bundle transcripts automatically, and the Claude bundle (`claude-parts`) is gone: Claude and ChatGPT take the transcripts as they are. **Make Gemini Notebook files** (or `yt-slurp gemini`) bundles them for Gemini Notebook as a separate step.
 - With the exe, results go in `Documents\yt-slurp` by default.
 
 ### Fixed

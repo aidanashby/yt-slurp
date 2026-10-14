@@ -18,10 +18,10 @@ yt-slurp is now a single self-contained `yt-slurp.exe`, built on GitHub's Window
   - one output list for transcripts, WAVs, links and skipped videos, colour-coded, filtered by chips (all on by default) and by a name filter; names are the exact YouTube title, with any extra (part number, skip reason) at the end; the list only follows new items when you're already at the bottom;
   - a content pane with in-file search, highlighting, and previous/next match;
   - a settings window (Settings in the menu bar) covering which videos, what to make (transcripts, WAVs, links), caption language, timestamps, WAV options, pace, folders, the transcription app and advanced limits;
-  - buttons for the results, WAV, Claude and Gemini folders, and to launch (or bring forward) the transcription app;
+  - buttons for the results and WAV folders, Make Gemini Notebook files, and to launch (or bring forward) the transcription app;
   - a one-line status bar that opens the full log;
   - automatic merging of Whisper text as soon as a video's parts are all saved;
-  - a Tools menu with settings, the filename smoke test, rebuild Claude and Gemini files, open manifest, the log, and the self-test.
+  - a Tools menu with settings, the filename smoke test, make Gemini Notebook files, open manifest, the log, and the self-test.
 - **`yt_slurp.py`** (the pipeline):
   - channel and playlist listing, duration filter, `links.txt` (URLs only) and `manifest.csv`;
   - work in rounds of 10 videos, rewriting links and the combined files after each round;
@@ -29,7 +29,7 @@ yt-slurp is now a single self-contained `yt-slurp.exe`, built on GitHub's Window
   - captions to clean text;
   - WAVs for videos without captions, split at silence, all in `needs-transcription`;
   - options to leave out transcripts, WAVs or links, and three crawl paces;
-  - merge, and the Claude and Gemini Notebook combined files;
+  - merge, and a separate step that bundles transcripts for Gemini Notebook (`yt-slurp gemini`);
   - update and fresh re-runs, cookie retry, bot-check pause, a run lock per folder, and a clean stop.
   The command line (`yt-slurp ...`) still works.
 - **Pre-release review** (see `docs/TEST-REPORT.md`): keyboard access and WCAG AA contrast throughout the window, a symbol as well as a colour for each kind of result, video IDs validated before use in any path, damaged settings files tolerated, and a fix for very slow search highlighting in long transcripts.
@@ -39,7 +39,8 @@ yt-slurp is now a single self-contained `yt-slurp.exe`, built on GitHub's Window
 
 - yt-slurp does not run Whisper. Your Whisper transcriber app (local or remote) transcribes the WAVs; you save each result into `whisper-transcripts`, and yt-slurp merges it.
 - WAVs all go in one folder, `needs-transcription`. Batch folders were dropped.
-- Filenames put the title first, then the ID and upload date. The Claude and Gemini files stay in upload-date order, taken from the manifest.
+- Filenames put the title first, then the ID and upload date. Gemini Notebook files are in upload-date order, taken from the manifest.
+- Slurps output transcripts only. Bundling is a separate step, for Gemini Notebook only: Claude and ChatGPT projects take the per-video transcripts as they are.
 - Skipped videos show in the window with the reason: shorter than the minimum, not in English with no captions, private or deleted, live stream not finished, or turned off in settings.
 - Audio over 60 minutes is split into equal parts no longer than the limit, each cut at the nearest silence within two minutes.
 - "Start again" keeps `whisper-transcripts`.

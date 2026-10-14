@@ -110,7 +110,6 @@ DEFAULT_SETTINGS = {
     "output": str(default_output()),
     "whisper_path": "",
     "whisper_title": "",
-    "chunk_words": ys.DEFAULT_CHUNK_WORDS,
     "max_sources": ys.DEFAULT_MAX_SOURCES,
     "max_source_words": ys.DEFAULT_MAX_SOURCE_WORDS,
     "welcomed": False,
@@ -162,9 +161,7 @@ def build_argv(settings: dict, url: str = "", list_file: str = "", only_type: st
              "--lang", settings["lang"],
              "--chunk-minutes", str(settings["chunk_minutes"]),
              "--pace", settings["pace"],
-             "--chunk-words", str(settings["chunk_words"]),
-             "--max-sources", str(settings["max_sources"]),
-             "--max-source-words", str(settings["max_source_words"])]
+             ]
     if only_type:
         argv += ["--types", only_type]
     elif not settings["ask_types"] and settings["types"]:
@@ -734,7 +731,7 @@ class App:
         bar.pack(fill="x")
         tools = tk.Menu(self.root, tearoff=False)
         tools.add_command(label="Check the transcription app keeps filenames", command=self.smoke_test)
-        tools.add_command(label="Rebuild Claude and Gemini files", command=self.rebuild_combined)
+        tools.add_command(label="Make Gemini Notebook files", command=self.make_gemini)
         tools.add_command(label="Open the manifest in Excel", command=self.open_manifest)
         tools.add_command(label="Show the full log", command=self.show_log)
         if not setup.frozen():
@@ -885,8 +882,7 @@ class App:
                 ("Open results folder", self.open_results, SLATE, SLATE_DARK),
                 ("Open WAV folder", self.open_wavs, SLATE, SLATE_DARK),
                 ("Launch transcription app", self.launch_whisper, BLUE, BLUE_DARK),
-                ("Open Claude files", lambda: self.open_sub(ys.DIR_CLAUDE), SLATE, SLATE_DARK),
-                ("Open Gemini files", lambda: self.open_sub(ys.DIR_GEMINI), SLATE, SLATE_DARK)):
+                ("Make Gemini Notebook files", self.make_gemini, SLATE, SLATE_DARK)):
             RoundButton(btns, text, cmd, colour=colour, hover=hover).pack(side="left", padx=(0, 8))
 
     # ----- status bar and log -----
@@ -1299,21 +1295,32 @@ class App:
                 for _, folder, _ in self.sources():
                     if ys.mergeable_ids(folder):
                         self.write_log(f"\nTranscripts found for {folder.name}. Merging...")
-                        self.start(["merge", str(folder)] + self.combined_args(), "Merging transcripts...")
+                        self.start(["merge", str(folder)], "Merging transcripts...")
                         break
         except Exception as e:  # never let a background check kill the window
             self.write_log(f"(Automatic merge check failed: {e})")
         self.root.after(AUTO_MERGE_EVERY_MS, self.auto_merge)
 
-    def combined_args(self):
+    def gemini_args(self):
         s = self.settings
-        return ["--chunk-words", str(s["chunk_words"]), "--max-sources", str(s["max_sources"]),
+        return ["--max-sources", str(s["max_sources"]),
                 "--max-source-words", str(s["max_source_words"])]
 
-    def rebuild_combined(self):
+    def make_gemini(self):
+        """A second step after a slurp: bundle the transcripts for Gemini Notebook."""
         folder = self.current_folder or self.ask_folder()
-        if folder:
-            self.start(["merge", str(folder)] + self.combined_args(), "Rebuilding Claude and Gemini files...")
+        if not folder:
+            return
+        if not (folder / ys.DIR_TRANSCRIPTS).is_dir() or not any((folder / ys.DIR_TRANSCRIPTS).glob("*.txt")):
+            messagebox.showinfo(APP_NAME, "There are no transcripts in this folder yet. Slurp a channel or "
+                                          "playlist first.")
+            return
+
+        def after(code):
+            if code == 0:
+                open_path(folder / ys.DIR_GEMINI)
+
+        self.start(["gemini", str(folder)] + self.gemini_args(), "Making Gemini Notebook files...", after)
 
     def ask_folder(self):
         d = filedialog.askdirectory(title="Choose the channel or playlist folder", initialdir=self.settings["output"])
@@ -1455,8 +1462,8 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def about(self):
-        messagebox.showinfo(APP_NAME, f"yt-slurp {ys.__version__}\n\nCollects YouTube transcripts for Claude "
-                                      f"and Gemini Notebook.\n\nhttps://github.com/{setup.REPO}")
+        messagebox.showinfo(APP_NAME, f"yt-slurp {ys.__version__}\n\nCollects YouTube transcripts for AI "
+                                      f"assistants such as Claude, ChatGPT and Gemini Notebook.\n\nhttps://github.com/{setup.REPO}")
 
     # ----- tools -----
 
@@ -1482,8 +1489,8 @@ class App:
                 f"3. Save them into:\n{folder / ys.DIR_WHISPER}\n"
                 "   Keep the suggested name. Check it still has the [AbC-d_123xY] part.\n\n"
                 "yt-slurp merges them by itself and tells you when the test has passed. If nothing "
-                "happens a few seconds after you save both, the filenames were changed: tell Claude "
-                "exactly how the saved names differ.")
+                "happens a few seconds after you save both, the filenames were changed: compare "
+                "the saved names with the WAV names, and keep the [AbC-d_123xY] part exactly.")
 
         self.clear_items()
         self.start(["smoke-wav", str(folder)], "Making the test WAVs...", after)
@@ -1514,7 +1521,8 @@ class App:
             "4. Videos without captions become WAV files. Click Open WAV folder and Launch transcription app, "
             "drag the WAVs in, and save each transcript into the whisper-transcripts folder. yt-slurp "
             "merges them by itself.\n\n"
-            "5. The files for Claude and Gemini Notebook are under Open Claude files and Open Gemini files.\n\n"
+            "5. Add the transcripts to Claude or ChatGPT as they are. For Gemini Notebook, which limits how many "
+            "sources a notebook can hold, click Make Gemini Notebook files to bundle them.\n\n"
             "Settings is in the menu bar. Before your first real WAVs, use Tools, then "
             "Check the transcription app keeps filenames.")
         self.settings["welcomed"] = True
@@ -1658,8 +1666,7 @@ class SettingsDialog:
         self.vars["whisper_title"] = v
         ttk.Entry(row, textvariable=v, width=14).pack(side="left", padx=5)
 
-        heading(right, "Advanced")
-        number(right, "chunk_words", "Words per Claude file:", "", 1000, 2_000_000, width=9)
+        heading(right, "Gemini Notebook files")
         number(right, "max_sources", "Gemini Notebook sources:", "", 1, 1000, width=9)
         number(right, "max_source_words", "Words per Gemini source:", "", 1000, 500_000, width=9)
 
@@ -1699,7 +1706,7 @@ class SettingsDialog:
                     val = int(val) if val == int(val) else val
                 except ValueError:
                     val = DEFAULT_SETTINGS[key]
-            elif key in ("limit", "chunk_words", "max_sources", "max_source_words"):
+            elif key in ("limit", "max_sources", "max_source_words"):
                 try:
                     val = max(1, int(float(val)))
                 except ValueError:
