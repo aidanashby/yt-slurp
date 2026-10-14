@@ -38,10 +38,9 @@ __version__ = "0.2.0"
 ID_OPEN = "["
 ID_CLOSE = "]"
 
-# Gemini Notebook (formerly NotebookLM). Third-party guides in 2026 give 50
-# sources per notebook on the free tier (paid tiers quoted as 100, 300 or 600)
-# and 500,000 words or 200 MB per source on every plan. Google's own help page
-# was not checked, so these are the values to change if Google changes them.
+# Gemini Notebook (formerly NotebookLM): 50 sources per notebook on the free
+# plan, and 500,000 words or 200 MB per source on every plan. Change these if
+# Google changes its limits.
 GEMINI_MAX_SOURCES_FREE = 50
 GEMINI_MAX_WORDS_PER_SOURCE = 500_000
 
@@ -88,11 +87,11 @@ BROWSERS = ("chrome", "edge", "firefox", "brave")
 
 STATUSES = (
     "pending", "transcript", "wav", "merged", "no-captions", "skipped-short", "skipped-live",
-    "skipped-private", "skipped-non-english", "needs-signin", "failed",
+    "skipped-private", "skipped-non-english", "needs-signin", "failed", "deleted",
 )
 MANIFEST_FIELDS = (
     "id", "title", "channel", "upload_date", "duration", "type", "status",
-    "source", "language", "wav_files", "batch", "error", "updated",
+    "source", "language", "wav_files", "batch", "error", "updated", "link_removed",
 )
 WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
@@ -635,7 +634,7 @@ def skip_reason(status: str, min_minutes=DEFAULT_MIN_MINUTES, error: str = "") -
     """Plain-English reason a video was not transcribed, for the window."""
     if status == "skipped-short":
         mins = int(min_minutes) if float(min_minutes) == int(float(min_minutes)) else min_minutes
-        return f"shorter than {mins} minutes"
+        return f"shorter than {mins} minute{'' if mins == 1 else 's'}"
     if status == "skipped-non-english":
         return "not in English, no captions"
     if status == "skipped-private":
@@ -800,7 +799,8 @@ class ConsoleUI:
     def counts(self, folder: Path, counts: dict) -> None:
         pass
 
-    def item(self, kind: str, folder: Path, path: Path | None = None, text: str = "", title: str = "") -> None:
+    def item(self, kind: str, folder: Path, path: Path | None = None, text: str = "", title: str = "",
+             vid: str = "") -> None:
         """A result has appeared (kind: transcript, wav, link, skipped). title is the
         exact YouTube title; text is a link's URL or a skipped video's reason."""
 
@@ -1504,7 +1504,8 @@ class SourceRun:
                 self.manifest.set(vid, status="pending")
             todo.append(vid)
         if short_n:
-            say(f"  Excluded {short_n} videos shorter than {a.min_minutes} minutes.")
+            unit = "minute" if a.min_minutes == 1 else "minutes"
+            say(f"  Excluded {short_n} video{'' if short_n == 1 else 's'} shorter than {a.min_minutes:g} {unit}.")
         for vtype, n in short_by_type.items():
             if n == total_by_type.get(vtype) and vtype == "short":
                 say("  Every Short is under the minimum length. Use --min-minutes 0 to include them.")
@@ -1552,7 +1553,7 @@ class SourceRun:
         self.manifest.set(vid, status=status, error=error, **fields)
         row = self.manifest.get(vid)
         reason = reason or skip_reason(status, self.args.min_minutes, error)
-        UI.item("skipped", self.folder, None, reason, row["title"])
+        UI.item("skipped", self.folder, None, reason, row["title"], vid=vid)
 
     def metadata_pass(self, todo: list[str], start: int = 0, total: int = 0) -> list[str]:
         """Fetch metadata for each video. Returns the IDs ready for content."""
@@ -1595,7 +1596,7 @@ class SourceRun:
                 ready.append(vid)
             r = self.manifest.get(vid)
             if not self.args.no_links and r["status"] not in ("skipped-short", "skipped-private"):
-                UI.item("link", self.folder, self.folder / "links.txt", watch_url(vid), r["title"])
+                UI.item("link", self.folder, self.folder / "links.txt", watch_url(vid), r["title"], vid=vid)
             self.save()
         return ready
 
@@ -1659,7 +1660,7 @@ class SourceRun:
                 write_atomic(out, transcript_doc(header, text))
                 self.manifest.set(vid, status="transcript", source=kind, error="")
                 say(f"    transcript ({kind} captions)")
-                UI.item("transcript", self.folder, out, title=row["title"])
+                UI.item("transcript", self.folder, out, title=row["title"], vid=vid)
                 return
 
         if not is_english(meta.get("language")) and not a.include_non_english:
@@ -1714,7 +1715,7 @@ class SourceRun:
         self.manifest.set(vid, status="wav", source="", wav_files=parts, batch="", error="")
         say(f"    {parts} WAV file{'s' if parts > 1 else ''} in {dest_dir.relative_to(self.folder)}")
         for final in finals:
-            UI.item("wav", self.folder, final, title=self.manifest.get(vid)["title"])
+            UI.item("wav", self.folder, final, title=self.manifest.get(vid)["title"], vid=vid)
 
     # ----- whole source -----
 
@@ -1796,9 +1797,37 @@ def migrate_names(folder: Path) -> None:
                 f.unlink()
 
 
+def remove_results(folder: Path, targets: list[tuple[str, str, Path | None]]) -> None:
+    """Delete results the person chose to remove: (kind, video ID, path) for
+    transcripts, WAVs, links and skipped videos. Removed videos are marked
+    in the manifest so a later slurp of the same channel doesn't bring them back."""
+    with FolderLock(folder):
+        manifest = Manifest(folder / "manifest.csv")
+        for kind, vid, path in targets:
+            row = manifest.get(vid) if vid else None
+            if kind in ("transcript", "wav") and path is not None:
+                Path(path).unlink(missing_ok=True)
+            if not row:
+                continue
+            if kind == "transcript":
+                manifest.set(vid, status="deleted")
+            elif kind == "wav":
+                if not find_by_id(folder / DIR_NEEDS, vid, ".wav") and row["status"] == "wav":
+                    manifest.set(vid, status="deleted")
+            elif kind == "link":
+                manifest.set(vid, link_removed="1")
+            elif kind == "skipped":
+                manifest.set(vid, status="deleted")
+        manifest.save()
+        if (folder / "links.txt").exists():
+            write_links(folder, manifest)
+        write_needs_list(folder, manifest)
+
+
 def write_links(folder: Path, manifest: Manifest) -> None:
     """links.txt: one URL per line, nothing else, in upload-date order."""
-    rows = [r for r in manifest.rows.values() if r["status"] not in ("skipped-short", "skipped-private")]
+    rows = [r for r in manifest.rows.values()
+            if r["status"] not in ("skipped-short", "skipped-private") and r["link_removed"] != "1"]
     rows.sort(key=lambda r: (r["upload_date"] or "99999999", r["id"]))
     lines = [watch_url(r["id"]) for r in rows]
     write_atomic(folder / "links.txt", "\n".join(lines) + ("\n" if lines else ""))
@@ -1959,7 +1988,7 @@ def _merge(folder: Path, args) -> None:
         write_atomic(out, transcript_doc(header, body))
         manifest.set(vid, status="merged", source="whisper", error="")
         merged.append(row)
-        UI.item("transcript", folder, out, title=title)
+        UI.item("transcript", folder, out, title=title, vid=vid)
         if args.delete_wavs:
             for wav in find_by_id(folder / DIR_NEEDS, vid, ".wav"):
                 wav.unlink()

@@ -7,7 +7,7 @@ yt-slurp collects the transcripts of every video on a YouTube channel or playlis
 
 It runs on Windows 10 and 11, and works on your own computer. It has no account, server or subscription.
 
-![The yt-slurp window. A channel link is in the box at the top beside a green Slurp button. On the left is a list of results, each marked with a symbol: a square for transcripts, a musical note for audio files, an arrow for links and a crossed circle for skipped videos, with chips above the list to show or hide each kind. On the right, the selected transcript is shown with the word "yeast" highlighted by a search.](docs/screenshot.png)
+![The yt-slurp window. A channel link is in the box at the top beside a green Slurp button. On the left is a list of results, each marked with a symbol: a square for transcripts, a musical note for audio files, an arrow for links and a crossed circle for skipped videos, with chips above the list to show or hide each kind. On the right, the selected transcript is shown formatted, with its title as a heading and its details in bold, and the editing tools above it.](docs/screenshot.png)
 
 ## Contents
 
@@ -68,12 +68,15 @@ While it runs:
 | ↗ | Link | The video's YouTube address |
 | ⊘ | Skipped | A video that was not transcribed. The reason is in brackets after the title |
 
-- The chips above the list (**Links**, **Skipped**, **Transcripts**, **WAVs**) show or hide each kind.
+- The list is grouped by kind: links, transcripts, WAVs, then skipped videos. The chips above it (**Links**, **Transcripts**, **WAVs**, **Skipped**) show or hide each kind.
 - The **Filter by name** box narrows the list as you type. Press **Esc** to clear it.
 - Select a result to see it on the right. Double-click it to open it: a transcript opens in your text editor, a WAV opens its folder, and a link opens in your browser.
 - On the right, a transcript is shown formatted (headings, **bold** and so on). Click in it to edit the Markdown source; click elsewhere to see it formatted again.
 - **Find in this file** highlights every match. Use the ‹ and › arrows, or **Enter** and **Shift+Enter**, to move between them. Type in **Replace with**, then select **Replace** (the current match) or **Replace all**.
-- **Undo** and **Redo** remember your last 10 changes. **Save** (or **Ctrl+S**) writes your changes; it is grey and reads **Saved** when there is nothing to save. If you move to another file with unsaved changes, yt-slurp asks whether to save them.
+- **↶** and **↷** (Undo and Redo) remember your last 10 changes. **Save** (or **Ctrl+S**) writes your changes; it is grey and reads **Saved** when there is nothing to save. If you move to another file with unsaved changes, yt-slurp asks whether to save them.
+- Only the tools that apply are shown: links, WAVs and skipped videos can't be edited, so they show just **Delete** (and **Play** and **Stop** for a WAV).
+- **Several at once.** Shift-click to select a range, or Ctrl-click to add single results. The right side lists which of them can be edited. **Replace all** then changes every selected transcript, and **Save** writes them all.
+- **Delete** works on any result, and on several at once. It deletes the file, removes a link from `links.txt`, or clears a skipped video from the list. Slurping the channel again won't bring them back.
 
 **Doing a channel again.** Pick it from **Done before**, or paste the same link, and select Slurp. yt-slurp asks whether to **get new videos and retry any that failed**, or to **start again from scratch**. Starting again keeps any transcripts you saved from your transcription app.
 
@@ -85,7 +88,9 @@ While it runs:
 
 Some videos have no captions. yt-slurp downloads their audio and turns it into WAV files (16 kHz, mono) in the channel's `needs-transcription` folder. Audio over 60 minutes is split into parts at a quiet moment.
 
-Before your first real WAV files, check that your transcription app keeps yt-slurp's filenames. yt-slurp matches each transcript to its video by the ID in square brackets, for example `[dQw4w9WgXcQ]`. On the **Tools** menu, select **Check the transcription app keeps filenames** and follow the steps.
+You need a transcription app that turns WAV files into text. A free one is [whisper-transcriber](https://github.com/aidanashby/whisper-transcriber), which runs OpenAI's Whisper on your own computer.
+
+yt-slurp matches each transcript to its video by the ID in square brackets in the filename, for example `[dQw4w9WgXcQ]`, so the transcription app must keep the WAV's filename when it saves the text. whisper-transcriber does. With another app, check the first file it saves.
 
 Then, for real videos:
 

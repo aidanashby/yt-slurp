@@ -20,6 +20,11 @@ import wave
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+try:  # plays WAV files on Windows; the Play button is hidden elsewhere
+    import winsound
+except ImportError:
+    winsound = None
+
 import yt_slurp as ys
 import yt_slurp_setup as setup
 
@@ -37,6 +42,7 @@ def default_output() -> Path:
 
 AUTO_MERGE_EVERY_MS = 5000
 POLL_MS = 100
+REDRAW_DELAY_MS = 250
 EDIT_UNDO_STEPS = 10
 UPDATE_CHECK_DELAY_MS = 3000
 SEARCH_DELAY_MS = 150
@@ -69,6 +75,14 @@ KINDS = {
     "transcript": ("Transcripts", "#2e7d32", "\u25a0"),
     "wav": ("WAVs", "#1565c0", "\u266a"),
 }
+
+
+KIND_ORDER = ["link", "transcript", "wav", "skipped"]  # chips and list grouping
+
+
+def sort_key(item: dict) -> tuple:
+    """Group the list by kind (in chip order), then by name."""
+    return (KIND_ORDER.index(item["kind"]), display_name(item).lower())
 
 
 def row_text(item: dict) -> str:
@@ -209,28 +223,32 @@ def folder_items(folder: Path) -> list[dict]:
     manifest = ys.Manifest(man) if man.exists() else None
     run = ys.load_run(folder)
 
-    def title_for(path: Path) -> str:
+    def vid_of(path: Path) -> str:
         m = ys._ID_RE.search(path.name)
-        row = manifest.get(m.group(1)) if (manifest and m) else None
+        return m.group(1) if m else ""
+
+    def title_for(path: Path) -> str:
+        row = manifest.get(vid_of(path)) if manifest else None
         return row["title"] if row else path.stem
 
     items = []
     tdir = folder / ys.DIR_TRANSCRIPTS
     for p in (tdir.glob(f"*{ys.TRANSCRIPT_EXT}") if tdir.is_dir() else []):
-        items.append({"kind": "transcript", "path": p, "title": title_for(p), "text": ""})
+        items.append({"kind": "transcript", "path": p, "title": title_for(p), "text": "", "vid": vid_of(p)})
     ndir = folder / ys.DIR_NEEDS
     for p in (ndir.rglob("*.wav") if ndir.is_dir() else []):
-        items.append({"kind": "wav", "path": p, "title": title_for(p), "text": ""})
+        items.append({"kind": "wav", "path": p, "title": title_for(p), "text": "", "vid": vid_of(p)})
     if manifest:
         links_on = (folder / "links.txt").exists()
         for r in manifest.rows.values():
             reason = ys.skip_reason(r["status"], run.get("min_minutes", ys.DEFAULT_MIN_MINUTES), r["error"])
             if reason:
-                items.append({"kind": "skipped", "path": None, "title": r["title"], "text": reason})
-            elif links_on and r["status"] not in ("skipped-short", "skipped-private"):
+                items.append({"kind": "skipped", "path": None, "title": r["title"], "text": reason, "vid": r["id"]})
+            elif (links_on and r["status"] not in ("skipped-short", "skipped-private", "deleted")
+                  and r["link_removed"] != "1"):
                 items.append({"kind": "link", "path": folder / "links.txt", "title": r["title"],
-                              "text": ys.watch_url(r["id"])})
-    items.sort(key=lambda it: (display_name(it).lower(), it["kind"]))
+                              "text": ys.watch_url(r["id"]), "vid": r["id"]})
+    items.sort(key=sort_key)
     return items
 
 
@@ -453,14 +471,44 @@ def add_keyboard(widget, action):
         widget.bind(key, lambda e: (action(), "break")[1])
 
 
+class FlowBar(tk.Frame):
+    """A row of controls that wraps onto more lines when the window is narrow."""
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=CARD)
+        self.shown: list = []
+        self.bind("<Configure>", lambda e: self.layout())
+
+    def show(self, widgets):
+        for w in self.winfo_children():
+            w.place_forget()
+        self.shown = list(widgets)
+        self.layout()
+
+    def layout(self):
+        width = max(self.winfo_width(), 1)
+        x = y = row_h = 0
+        gap = 6
+        for w in self.shown:
+            ww, wh = w.winfo_reqwidth(), w.winfo_reqheight()
+            if isinstance(w, SearchBox):
+                ww = max(150, min(260, width // 3))
+            if x and x + ww > width:
+                x, y, row_h = 0, y + row_h + gap, 0
+            w.place(x=x, y=y, width=ww)
+            x += ww + gap
+            row_h = max(row_h, wh)
+        self.configure(height=max(y + row_h, 1))
+
+
 class RoundButton(tk.Canvas):
     """A soft-cornered flat button, like the Whisper app's."""
 
     def __init__(self, parent, text, command, colour=SLATE, hover=SLATE_DARK, fg="white",
-                 width=None, height=34, font=(FONT, 10), bg=BG):
+                 width=None, height=34, font=(FONT, 10), bg=BG, pad=28):
         self.font = font
         tmp = tk.Label(parent, text=text, font=font)
-        w = width or tmp.winfo_reqwidth() + 28
+        w = width or tmp.winfo_reqwidth() + pad
         tmp.destroy()
         super().__init__(parent, width=w, height=height, bg=bg, highlightthickness=0, cursor="hand2",
                          takefocus=1)
@@ -684,8 +732,8 @@ class GuiUI:
     def counts(self, folder, counts) -> None:
         self._post("counts", Path(folder), dict(counts))
 
-    def item(self, kind, folder, path=None, text="", title="") -> None:
-        self._post("item", kind, Path(folder), Path(path) if path else None, text, title)
+    def item(self, kind, folder, path=None, text="", title="", vid="") -> None:
+        self._post("item", kind, Path(folder), Path(path) if path else None, text, title, vid)
 
     def choose(self, question, options):
         return self._ask("choose", question, options)
@@ -719,6 +767,11 @@ class App:
         self.stage = "Ready."
         self.counts_text = ""
         self.matches: list[int] = []
+        self.multi: list[dict] = []
+        self.multi_texts: dict = {}
+        self.multi_saved: dict = {}
+        self.view_item = None
+        self.playing = False
         self.closed = False
         self.update_info = None
         self.match_i = -1
@@ -797,7 +850,6 @@ class App:
         bar = self.menu_bar = tk.Frame(self.root, bg=MENU_BG)
         bar.pack(fill="x")
         tools = tk.Menu(self.root, tearoff=False)
-        tools.add_command(label="Check the transcription app keeps filenames", command=self.smoke_test)
         tools.add_command(label="Make Gemini Notebook files", command=self.make_gemini)
         tools.add_command(label="Open the manifest in Excel", command=self.open_manifest)
         tools.add_command(label="Show the full log", command=self.show_log)
@@ -883,7 +935,7 @@ class App:
         chips = tk.Frame(left, bg=CARD)
         chips.pack(fill="x", padx=10, pady=(10, 6))
         self.chips = {}
-        for kind in sorted(KINDS, key=lambda k: KINDS[k][0]):
+        for kind in KIND_ORDER:
             chip = Chip(chips, kind, self.redraw)
             chip.pack(side="left", padx=(0, 6))
             self.chips[kind] = chip
@@ -891,7 +943,7 @@ class App:
         self.name_filter.pack(fill="x", padx=10, pady=(0, 6))
         listf = tk.Frame(left, bg=CARD)
         listf.pack(fill="both", expand=True, padx=(10, 4), pady=(0, 10))
-        self.tree = ttk.Treeview(listf, show="tree", selectmode="browse", style="Out.Treeview")
+        self.tree = ttk.Treeview(listf, show="tree", selectmode="extended", style="Out.Treeview")
         for kind, (_, colour, _) in KINDS.items():
             self.tree.tag_configure(kind, foreground=colour)
         sb = ttk.Scrollbar(listf, orient="vertical", command=self.tree.yview, style="Slim.Vertical.TScrollbar")
@@ -917,21 +969,22 @@ class App:
         self.match_label = tk.Label(srow, text="", bg=CARD, fg=MUTED, font=(FONT, 9), width=10)
         self.match_label.pack(side="left")
 
-        rrow = tk.Frame(right, bg=CARD)
-        rrow.pack(fill="x", padx=10, pady=(0, 6))
-        self.replace_box = SearchBox(rrow, "Replace with", lambda: None, clear_button=True)
-        self.replace_box.pack(side="left", fill="x", expand=True)
-        self.replace_btn = RoundButton(rrow, "Replace", self.replace_one, height=28, bg=CARD, font=(FONT, 9))
-        self.replace_btn.pack(side="left", padx=(6, 0))
-        self.replace_all_btn = RoundButton(rrow, "Replace all", self.replace_all, height=28, bg=CARD, font=(FONT, 9))
-        self.replace_all_btn.pack(side="left", padx=(6, 0))
-        self.undo_btn = RoundButton(rrow, "\u21b6 Undo", self.undo, height=28, bg=CARD, font=(FONT, 9))
-        self.undo_btn.pack(side="left", padx=(14, 0))
-        self.redo_btn = RoundButton(rrow, "Redo \u21b7", self.redo, height=28, bg=CARD, font=(FONT, 9))
-        self.redo_btn.pack(side="left", padx=(6, 0))
-        self.save_btn = RoundButton(rrow, "Saved", self.save_file, colour=GREEN, hover=GREEN_DARK, height=28,
-                                    width=74, bg=CARD, font=(FONT, 9, "bold"))
-        self.save_btn.pack(side="left", padx=(6, 0))
+        # Editing tools. Which ones show depends on what is selected; they wrap
+        # onto more lines in a narrow window.
+        self.edit_bar = FlowBar(right)
+        self.edit_bar.pack(fill="x", padx=10, pady=(0, 6))
+        small = dict(height=26, bg=CARD, font=(FONT, 9), pad=16)
+        self.replace_box = SearchBox(self.edit_bar, "Replace with", lambda: None, clear_button=True, width=16)
+        self.replace_btn = RoundButton(self.edit_bar, "Replace", self.replace_one, **small)
+        self.replace_all_btn = RoundButton(self.edit_bar, "Replace all", self.replace_all, **small)
+        self.undo_btn = RoundButton(self.edit_bar, "\u21b6", self.undo, **small)
+        self.redo_btn = RoundButton(self.edit_bar, "\u21b7", self.redo, **small)
+        self.save_btn = RoundButton(self.edit_bar, "Saved", self.save_file, colour=GREEN, hover=GREEN_DARK,
+                                    width=62, height=26, bg=CARD, font=(FONT, 9, "bold"))
+        self.play_btn = RoundButton(self.edit_bar, "\u25b6 Play", self.play_wav, colour=BLUE, hover=BLUE_DARK, **small)
+        self.stop_play_btn = RoundButton(self.edit_bar, "\u25a0 Stop", self.stop_wav, **small)
+        self.delete_btn = RoundButton(self.edit_bar, "Delete", self.delete_selected, colour=RED, hover=RED_DARK,
+                                      **small)
 
         stack = tk.Frame(right, bg=CARD)
         stack.pack(fill="both", expand=True, padx=(10, 4), pady=(0, 10))
@@ -1084,61 +1137,87 @@ class App:
         return not needle or needle in display_name(it).lower()
 
     def redraw(self):
-        sel = self.selected()
+        """Rebuild the list, grouped by kind, keeping the selection and scroll position."""
+        self._redraw_job = None
+        chosen = {id(it) for it in self.selected_items()}
+        top = self.tree.yview()[0]
         self.tree.delete(*self.tree.get_children())
-        for i, it in enumerate(self.items):
+        order = sorted(range(len(self.items)), key=lambda i: sort_key(self.items[i]))
+        keep = []
+        for i in order:
+            it = self.items[i]
             if self.visible(it):
                 self.tree.insert("", "end", iid=str(i), text=row_text(it), tags=(it["kind"],))
+                if id(it) in chosen:
+                    keep.append(str(i))
         self.update_chip_counts()
-        if sel is not None:
-            idx = next((i for i, it in enumerate(self.items) if it is sel), None)
-            if idx is not None and self.tree.exists(str(idx)):
-                self.tree.selection_set(str(idx))
+        if keep:
+            self.tree.selection_set(keep)
+        self.tree.yview_moveto(top)
+
+    def schedule_redraw(self):
+        if not getattr(self, "_redraw_job", None):
+            self._redraw_job = self.root.after(REDRAW_DELAY_MS, self.redraw)
 
     def update_chip_counts(self):
         for kind, chip in self.chips.items():
             chip.set_count(sum(1 for it in self.items if it["kind"] == kind))
 
-    def add_item(self, kind, folder, path, text, title):
+    def add_item(self, kind, folder, path, text, title, vid=""):
         if self.current_folder is None:
             self.show_folder(folder)
         elif self.current_folder != folder:
             return  # results for another folder (an automatic merge); not on screen
-        it = {"kind": kind, "path": path, "text": text, "title": title}
+        if not vid and path is not None:
+            m = ys._ID_RE.search(Path(path).name)
+            vid = m.group(1) if m else ""
+        it = {"kind": kind, "path": path, "text": text, "title": title, "vid": vid}
         key = item_key(it)
         if key in self.keys:
             return
         self.keys.add(key)
         self.items.append(it)
         self.update_chip_counts()
-        if not self.visible(it):
-            return
-        at_bottom = self.tree.yview()[1] >= 0.999
-        iid = str(len(self.items) - 1)
-        self.tree.insert("", "end", iid=iid, text=row_text(it), tags=(kind,))
-        if at_bottom and not self.tree.selection():
-            # Follow new items only when already at the end. Scroll once Tk has
-            # laid out the new row; scrolling straight away does nothing.
-            self.root.after_idle(lambda: self.tree.yview_moveto(1.0))
+        if self.visible(it):
+            # Results are grouped by kind, so a new one may belong anywhere.
+            # Redraw in a moment, keeping the scroll position and selection.
+            self.schedule_redraw()
+
+    def selected_items(self) -> list[dict]:
+        out = []
+        for iid in self.tree.selection():
+            try:
+                out.append(self.items[int(iid)])
+            except (ValueError, IndexError):
+                pass  # a row left over from before the list changed
+        return out
 
     def selected(self):
-        sel = self.tree.selection()
-        if not sel:
-            return None
-        try:
-            return self.items[int(sel[0])]
-        except (ValueError, IndexError):
-            return None  # a row left over from before the list changed
+        """The one selected result, or None if none or several are selected."""
+        items = self.selected_items()
+        return items[0] if len(items) == 1 else None
 
     # ----- content pane -----
 
     def preview(self, _=None):
-        it = self.selected()
-        if not it or it is self.edit_item:
+        items = self.selected_items()
+        if len(items) > 1:
+            if self.multi and [id(i) for i in items] == [id(i) for i in self.multi]:
+                return
+            if not self.confirm_leave_edits():
+                return
+            self.stop_wav()
+            self.show_multi(items)
+            return
+        it = items[0] if items else None
+        if not it or (it is self.edit_item and not self.multi):
             return
         if not self.confirm_leave_edits():
             return
+        self.stop_wav()
+        self.multi = []
         self.edit_item = None
+        self.view_item = it
         if it["kind"] == "transcript":
             try:
                 text = ys.read_text(it["path"])
@@ -1147,6 +1226,7 @@ class App:
                 text = "(this file is no longer there)"
             self.load_editor(text if self.edit_item else "")
             self.set_preview(text, markdown=True)
+            self.show_tools()
             return
         if it["kind"] == "wav":
             text = wav_info(it["path"]) if it["path"] and it["path"].exists() else "(this file is no longer there)"
@@ -1156,6 +1236,52 @@ class App:
             text = f"{it['title']}\n\nSkipped: {it['text']}."
         self.load_editor("")
         self.set_preview(text)
+        self.show_tools()
+
+    def show_multi(self, items):
+        """Several results selected: list them, and find and replace across the
+        transcripts among them."""
+        self.edit_item = None
+        self.view_item = None
+        self.multi = items
+        editable = [it for it in items if it["kind"] == "transcript"]
+        others = [it for it in items if it["kind"] != "transcript"]
+        self.multi_saved, self.multi_texts = {}, {}
+        for it in editable:
+            try:
+                self.multi_saved[it["path"]] = self.multi_texts[it["path"]] = ys.read_text(it["path"])
+            except OSError:
+                pass
+        lines = [f"# {len(items)} results selected", ""]
+        if editable:
+            lines += [f"## Can be edited ({len(editable)})", ""]
+            lines += [f"- {ys.md_escape_inline(display_name(it))}" for it in editable] + [""]
+        if others:
+            lines += [f"## Can't be edited ({len(others)})", ""]
+            lines += [f"- {ys.md_escape_inline(display_name(it))} ({KINDS[it['kind']][0].lower().rstrip('s')})"
+                      for it in others] + [""]
+        if editable:
+            lines.append("Find and replace below changes every selected transcript. Select Save to keep the changes.")
+        self.load_editor("")
+        self.set_preview("\n".join(lines), markdown=True)
+        self.show_tools()
+
+    def show_tools(self):
+        """Show only the tools that apply to what is selected."""
+        tools = []
+        if self.multi:
+            if any(it["kind"] == "transcript" for it in self.multi):
+                tools = [self.replace_box, self.replace_all_btn, self.save_btn]
+            tools.append(self.delete_btn)
+        elif self.edit_item:
+            tools = [self.replace_box, self.replace_btn, self.replace_all_btn, self.undo_btn, self.redo_btn,
+                     self.save_btn, self.delete_btn]
+        elif self.view_item:
+            if self.view_item["kind"] == "wav" and winsound is not None:
+                tools = [self.play_btn, self.stop_play_btn]
+            tools.append(self.delete_btn)
+        self.edit_bar.show(tools)
+        self.update_edit_buttons()
 
     def set_preview(self, text, markdown=False):
         self.empty_hint.place_forget() if text else self.empty_hint.place(relx=0.5, rely=0.5, anchor="center")
@@ -1214,6 +1340,8 @@ class App:
         return self.editor.get("1.0", "end-1c")
 
     def dirty(self) -> bool:
+        if self.multi:
+            return any(self.multi_texts[p] != self.multi_saved[p] for p in self.multi_texts)
         return bool(self.edit_item) and self.editor_text() != self.saved_text
 
     def edit_changed(self, _=None):
@@ -1221,9 +1349,10 @@ class App:
         self.update_edit_buttons()
 
     def update_edit_buttons(self):
-        editable = bool(self.edit_item)
+        editable = bool(self.edit_item) or bool(self.multi_texts if self.multi else None)
         for b in (self.replace_btn, self.replace_all_btn):
             b.set_enabled(editable)
+        self.stop_play_btn.set_enabled(self.playing)
         self.undo_btn.set_enabled(editable and self.can("canundo"))
         self.redo_btn.set_enabled(editable and self.can("canredo"))
         if self.dirty():
@@ -1281,6 +1410,19 @@ class App:
 
     def replace_all(self):
         needle, repl = self.text_search.get(), self.replace_box.get()
+        if self.multi and needle:
+            total, files = 0, 0
+            for p, text in self.multi_texts.items():
+                n = len(find_matches(text, needle))
+                if n:
+                    self.multi_texts[p] = re.sub(re.escape(needle), lambda m: repl, text, flags=re.IGNORECASE)
+                    total, files = total + n, files + 1
+            self.run_search()
+            self.update_edit_buttons()
+            self.stage = (f"Replaced {total} {'match' if total == 1 else 'matches'} in {files} "
+                          f"{'file' if files == 1 else 'files'}. Select Save to keep the changes.")
+            self.update_status()
+            return
         if not self.edit_item or not needle:
             return
         self.start_editing()
@@ -1316,6 +1458,21 @@ class App:
     def save_file(self):
         if not self.dirty():
             return
+        if self.multi:
+            saved = 0
+            for p, text in self.multi_texts.items():
+                if text != self.multi_saved[p]:
+                    try:
+                        ys.write_atomic(p, text)
+                    except OSError as e:
+                        messagebox.showerror(APP_NAME, f"Could not save {p.name}: {e.strerror}")
+                        continue
+                    self.multi_saved[p] = text
+                    saved += 1
+            self.update_edit_buttons()
+            self.stage = f"Saved {saved} {'file' if saved == 1 else 'files'}."
+            self.update_status()
+            return
         text = self.editor_text()
         try:
             ys.write_atomic(self.edit_item["path"], text)
@@ -1331,15 +1488,71 @@ class App:
         """Before leaving a file with unsaved changes: save, discard, or stay."""
         if not self.dirty():
             return True
-        ans = messagebox.askyesnocancel(APP_NAME, f"Save your changes to {self.edit_item['title']}?")
+        what = (f"the {len([p for p in self.multi_texts if self.multi_texts[p] != self.multi_saved[p]])} "
+                "changed transcripts" if self.multi else self.edit_item["title"])
+        ans = messagebox.askyesnocancel(APP_NAME, f"Save your changes to {what}?")
         if ans is None:
-            prev = next((i for i, it in enumerate(self.items) if it is self.edit_item), None)
-            if prev is not None and self.tree.exists(str(prev)):
-                self.tree.selection_set(str(prev))
+            back = self.multi or [self.edit_item]
+            iids = [str(i) for i, it in enumerate(self.items) if any(it is b for b in back)]
+            iids = [i for i in iids if self.tree.exists(i)]
+            if iids:
+                self.tree.selection_set(iids)
             return False
         if ans:
             self.save_file()
         return True
+
+    def delete_selected(self):
+        items = self.selected_items()
+        if not items or not self.current_folder:
+            return
+        counts = {}
+        for it in items:
+            counts[KINDS[it["kind"]][0].lower()] = counts.get(KINDS[it["kind"]][0].lower(), 0) + 1
+        what = ", ".join(f"{n} {k if n != 1 else k.rstrip('s')}" for k, n in counts.items())
+        if not messagebox.askyesno(
+                APP_NAME, f"Delete {what}?\n\nFiles are deleted from the results folder, links are removed "
+                          "from links.txt, and skipped videos are removed from the list. Slurping this channel "
+                          "again won't bring them back.", icon="warning", default="no"):
+            return
+        self.stop_wav()
+        if self.multi:
+            self.multi_texts = {p: t for p, t in self.multi_saved.items()}  # drop unsaved changes
+        targets = [(it["kind"], it.get("vid", ""), it["path"] if it["kind"] in ("transcript", "wav") else None)
+                   for it in items]
+        try:
+            ys.remove_results(self.current_folder, targets)
+        except ys.Stop as e:
+            messagebox.showinfo(APP_NAME, str(e))
+            return
+        gone = {id(it) for it in items}
+        self.items = [it for it in self.items if id(it) not in gone]
+        self.keys = {item_key(it) for it in self.items}
+        self.tree.selection_remove(*self.tree.selection())
+        self.multi, self.edit_item, self.view_item = [], None, None
+        self.load_editor("")
+        self.redraw()
+        self.set_preview("")
+        self.show_tools()
+        man = self.current_folder / "manifest.csv"
+        if man.exists():
+            self.show_counts(ys.Manifest(man).counts())
+        self.stage = f"Deleted {what}."
+        self.update_status()
+
+    def play_wav(self):
+        it = self.view_item
+        if winsound is None or not it or it["kind"] != "wav" or not it["path"].exists():
+            return
+        winsound.PlaySound(str(it["path"]), winsound.SND_FILENAME | winsound.SND_ASYNC)
+        self.playing = True
+        self.update_edit_buttons()
+
+    def stop_wav(self):
+        if self.playing and winsound is not None:
+            winsound.PlaySound(None, 0)
+        self.playing = False
+        self.update_edit_buttons()
 
     def active_text(self):
         return self.editor if self.editing else self.preview_text
@@ -1352,6 +1565,17 @@ class App:
 
     def run_search(self):
         self._search_job = None
+        if self.multi:  # count matches across the selected transcripts
+            needle = self.text_search.get()
+            self.matches, self.match_i = [], -1
+            if not needle:
+                self.match_label.configure(text="")
+            else:
+                counts = [len(find_matches(t, needle)) for t in self.multi_texts.values()]
+                total, files = sum(counts), sum(1 for c in counts if c)
+                self.match_label.configure(text=f"{total} in {files} file{'' if files == 1 else 's'}"
+                                           if total else "No matches")
+            return
         t = self.active_text()
         t.tag_remove("match", "1.0", "end")
         t.tag_remove("current", "1.0", "end")
@@ -1539,8 +1763,8 @@ class App:
             if self.current_folder == folder:
                 self.show_counts(counts)
         elif kind == "item":
-            _, ikind, folder, path, text, title = msg
-            self.add_item(ikind, folder, path, text, title)
+            _, ikind, folder, path, text, title, vid = msg
+            self.add_item(ikind, folder, path, text, title, vid)
             if self.smoke_waiting and ikind == "transcript" and folder.name == "smoke-test":
                 self.smoke_waiting = False
                 messagebox.showinfo(APP_NAME, "Test passed. The transcription app kept the filenames, and the "
@@ -1827,8 +2051,7 @@ class App:
             "merges them by itself.\n\n"
             "5. Add the transcripts to Claude or ChatGPT as they are. For Gemini Notebook, which limits how many "
             "sources a notebook can hold, click Make Gemini Notebook files to bundle them.\n\n"
-            "Settings is in the menu bar. Before your first real WAVs, use Tools, then "
-            "Check the transcription app keeps filenames.")
+            "Settings is in the menu bar.")
         self.settings["welcomed"] = True
         save_settings(self.settings)
 

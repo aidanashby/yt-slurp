@@ -65,7 +65,7 @@ def names(app):
 def run_fake(app):
     app.url_var.set("https://www.youtube.com/@test")
     app.slurp()
-    pump(app, lambda: idle(app))
+    pump(app, lambda: idle(app) and not getattr(app, "_redraw_job", None))
     assert app.stage == "Finished."
 
 
@@ -83,7 +83,9 @@ def test_slurp_shows_everything_together_and_auto_merges(app):
     assert app.tree.column("#0", "width") > 0 and app.tree["columns"] == ""
 
     # Chips filter by kind; they are in alphabetical order.
-    assert [c.label for c in app.chips.values()] == ["Links", "Skipped", "Transcripts", "WAVs"]
+    assert [c.label for c in app.chips.values()] == ["Links", "Transcripts", "WAVs", "Skipped"]
+    kinds_in_order = [app.items[int(i)]["kind"] for i in app.tree.get_children()]
+    assert kinds_in_order == sorted(kinds_in_order, key=["link", "transcript", "wav", "skipped"].index)
     for kind in ("link", "skipped", "wav"):
         app.chips[kind].toggle()
     assert names(app) == ["\u25a0  Has Captions"]
@@ -125,19 +127,21 @@ def test_slurp_shows_everything_together_and_auto_merges(app):
     assert ys.Manifest(folder / "manifest.csv").get("nocap000002")["status"] == "merged"
 
 
-def test_new_items_do_not_move_a_scrolled_or_selected_list(app):
+def test_new_items_do_not_move_a_scrolled_list(app):
     from pathlib import Path
     folder = Path("/tmp/fake-folder")
     app.current_folder = folder
-    for i in range(60):  # items arrive one poll at a time, as in a real run
+    for i in range(60):
         app.add_item("link", folder, None, f"https://x/{i}", f"Video {i:02d}")
-        app.root.update()
-    assert app.tree.yview()[1] >= 0.999  # followed while at the bottom
-    app.tree.yview_moveto(0)
+    app.redraw()
     app.root.update()
-    app.add_item("link", folder, None, "https://x/new", "Video new")
+    app.tree.yview_moveto(0.5)
     app.root.update()
-    assert app.tree.yview()[0] == 0  # stayed where the user scrolled
+    where = app.tree.yview()[0]
+    for i in range(5):  # more results arrive, grouped and sorted into the list
+        app.add_item("transcript", folder, Path(f"/tmp/T{i} [abcdefghij{i}] 2024-01-01.md"), "", f"T{i}")
+    pump(app, lambda: not getattr(app, "_redraw_job", None), timeout=5)
+    assert abs(app.tree.yview()[0] - where) < 0.01  # stayed where the user scrolled
 
 
 def test_pause_and_resume(app):
@@ -325,3 +329,59 @@ def test_unsaved_changes_prompt_when_switching(app, monkeypatch):
     app.tree.selection_set(other)
     app.root.update()
     assert asked and app.edit_item is None or app.edit_item is not app.items[int(iid)]
+
+
+def test_tools_shown_depend_on_selection(app):
+    run_fake(app)
+    def pick(pred):
+        iid = next(i for i in app.tree.get_children() if pred(app.items[int(i)]))
+        app.tree.selection_set(iid)
+        app.root.update()
+    pick(lambda it: it["kind"] == "transcript")
+    assert app.save_btn in app.edit_bar.shown and app.delete_btn in app.edit_bar.shown
+    pick(lambda it: it["kind"] == "link")
+    assert app.edit_bar.shown == [app.delete_btn]
+    pick(lambda it: it["kind"] == "skipped")
+    assert app.edit_bar.shown == [app.delete_btn]
+
+
+def test_multi_select_replace_and_delete(app, monkeypatch):
+    import yt_slurp_gui as gui
+    run_fake(app)
+    folder = app.current_folder
+    # Two transcripts: write a second one so there is something to replace across.
+    t1 = next(it for it in app.items if it["kind"] == "transcript")
+    t2 = t1["path"].with_name("Copy [copy0000001] 2024-01-02.md")
+    t2.write_text(t1["path"].read_text(encoding="utf-8"), encoding="utf-8")
+    app.show_folder(folder)
+    app.root.update()
+    iids = [i for i in app.tree.get_children() if app.items[int(i)]["kind"] in ("transcript", "link")]
+    app.tree.selection_set(iids)
+    app.root.update()
+    assert app.multi and app.replace_all_btn in app.edit_bar.shown
+    summary = app.preview_text.get("1.0", "end")
+    assert "Can be edited (2)" in summary and "Can't be edited" in summary
+    app.text_search.var.set("hello")
+    app.run_search()
+    assert app.match_label.cget("text") == "2 in 2 files"
+    app.replace_box.var.set("goodbye")
+    app.replace_all()
+    assert app.save_btn.text == "Save"
+    app.save_file()
+    assert "goodbye" in t1["path"].read_text(encoding="utf-8") and "goodbye" in t2.read_text(encoding="utf-8")
+    # Delete a link: its line leaves links.txt and stays gone.
+    link = next(i for i in app.tree.get_children() if app.items[int(i)]["kind"] == "link")
+    url = app.items[int(link)]["text"]
+    app.tree.selection_set(link)
+    app.root.update()
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    app.delete_selected()
+    assert url not in (folder / "links.txt").read_text(encoding="utf-8")
+    assert all(it.get("text") != url for it in app.items)
+    # Delete a transcript.
+    tr = next(i for i in app.tree.get_children() if app.items[int(i)]["kind"] == "transcript")
+    path = app.items[int(tr)]["path"]
+    app.tree.selection_set(tr)
+    app.root.update()
+    app.delete_selected()
+    assert not path.exists()

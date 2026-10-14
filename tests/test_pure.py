@@ -221,6 +221,7 @@ def test_part_of():
 
 def test_skip_reason():
     assert ys.skip_reason("skipped-short", 5) == "shorter than 5 minutes"
+    assert ys.skip_reason("skipped-short", 1) == "shorter than 1 minute"
     assert ys.skip_reason("skipped-short", 2.5) == "shorter than 2.5 minutes"
     assert ys.skip_reason("skipped-non-english") == "not in English, no captions"
     assert ys.skip_reason("no-captions") == "no captions, WAVs turned off"

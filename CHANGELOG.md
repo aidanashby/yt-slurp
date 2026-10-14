@@ -2,6 +2,21 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
+## Unreleased
+
+### Added
+- Select several results (Shift or Ctrl+click): see which can be edited, then find and replace across all the selected transcripts and save them together.
+- Delete for any result, singly or several at once. Deleted results don't come back on the next slurp, and a deleted link leaves `links.txt`.
+- Play and Stop for WAV files (Windows).
+
+### Changed
+- The editing tools only show when they apply, wrap onto more lines in a narrow window, and are more compact. Undo and Redo are now the ↶ and ↷ symbols.
+- The results list is grouped by kind (links, transcripts, WAVs, skipped), and the chips follow the same order.
+- The "check the transcription app keeps filenames" menu item is gone (`yt-slurp smoke-wav` remains).
+
+### Fixed
+- "shorter than 1 minute", not "1 minutes".
+
 ## 0.2.0 (14th October 2026)
 
 ### Changed
