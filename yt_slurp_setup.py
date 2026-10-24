@@ -14,12 +14,15 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
+
+import certifi
 
 REPO = "aidanashby/yt-slurp"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
@@ -109,8 +112,11 @@ def use_tools() -> None:
 # =============================================================================
 
 def _open(url: str):
+    # certifi, as yt-dlp uses: Python's default also trusts the Windows CA store,
+    # where an expired ISRG Root X2 cross-sign makes gyan.dev fail as "expired".
+    ctx = ssl.create_default_context(cafile=certifi.where())
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    return urllib.request.urlopen(req, timeout=TIMEOUT_S)
+    return urllib.request.urlopen(req, timeout=TIMEOUT_S, context=ctx)
 
 
 def download(url: str, dest: Path, progress=None) -> None:

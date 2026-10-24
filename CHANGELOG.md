@@ -2,6 +2,11 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
+## 0.2.3 (24th October 2026)
+
+### Fixed
+- The first-run ffmpeg download no longer fails with "certificate has expired" on PCs whose Windows certificate store holds an old, expired Let's Encrypt certificate. yt-slurp's own downloads now check certificates against the same list yt-dlp uses (certifi), not the Windows store.
+
 ## 0.2.2 (14th October 2026)
 
 ### Fixed

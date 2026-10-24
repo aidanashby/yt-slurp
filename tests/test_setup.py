@@ -128,6 +128,22 @@ def test_apply_update_swaps_the_exe(tmp_path, monkeypatch):
     assert not (tmp_path / "yt-slurp.exe.old").exists()
 
 
+def test_open_trusts_certifi_only(monkeypatch):
+    # Windows' own stores can hold expired cross-signed roots that break gyan.dev
+    import ssl
+    import certifi
+    seen = {}
+
+    def fake_urlopen(req, timeout, context):
+        seen["context"] = context
+        return FakeResponse(b"")
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", fake_urlopen)
+    setup._open("https://example.com/")
+    expected = ssl.create_default_context(cafile=certifi.where())
+    assert seen["context"].get_ca_certs() == expected.get_ca_certs()
+
+
 def test_resource_dir_has_the_icon():
     assert (setup.resource_dir() / "icon.png").exists()
     assert (Path(setup.resource_dir()) / "icon.ico").exists()

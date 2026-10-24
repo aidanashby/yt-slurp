@@ -9,7 +9,7 @@ description = "Collect YouTube transcripts for a channel or playlist, for analys
 readme = "README.md"
 requires-python = ">=3.10"
 # [default] pulls in yt-dlp-ejs, which solves YouTube's JavaScript challenges using Deno.
-dependencies = ["yt-dlp[default]>=2025.11.12"]
+dependencies = ["yt-dlp[default]>=2025.11.12", "certifi"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
