@@ -4,13 +4,14 @@ Last updated: 24th October 2026 (0.2.4 release)
 
 ## Where it is
 
-yt-slurp 0.2.4 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works. Live use on more channels, the first-run downloads on a clean machine and the Update button (needs a later release to test) are the next things to watch.
+yt-slurp 0.2.4 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works, including the first-run downloads on a laptop that had neither tool (0.2.3, HP laptop). Live use on more channels and the Update button (0.2.3 to 0.2.4 is the first real test) are the next things to watch.
 
 ## Done
 
 - **`yt-slurp.exe`** (PyInstaller, one file, about 26 MB):
   - Python, Tkinter, yt-dlp and the app built in, so there is nothing to install first;
-  - on first run, downloads ffmpeg (from gyan.dev) and Deno (from GitHub) into `%LOCALAPPDATA%\yt-slurp\tools`, checking published checksums, unless copies already exist;
+  - on first run, downloads ffmpeg (from gyan.dev) and Deno (from GitHub) into `%LOCALAPPDATA%\yt-slurp\tools`, checking published checksums, unless copies already exist. Its downloads check certificates against certifi, as yt-dlp does, not the Windows stores (0.2.3: an expired ISRG Root X2 cross-sign in the HP laptop's Windows CA store made gyan.dev fail as "certificate has expired"). ffmpeg took about 13 minutes from gyan.dev there;
+  - a "Setting up yt-slurp" window shows these downloads, and updates, step by step with a progress bar, megabytes and time left (0.2.4);
   - checks GitHub for a newer release a few seconds after the window opens, shows a blue **Update** button in the menu bar, and updates itself with a restart;
   - built and attached to the release by `.github/workflows/build-exe.yml` when a release is published.
 - **`yt_slurp_gui.py`** (the window, Tkinter, styled after the Whisper Transcriber app, with a red tongue icon):
@@ -37,7 +38,7 @@ yt-slurp 0.2.4 is released as a single self-contained `yt-slurp.exe` on GitHub's
   - update and fresh re-runs, cookie retry, bot-check pause, a run lock per folder, and a clean stop.
   The command line (`yt-slurp ...`) still works.
 - **Pre-release review** (see `docs/TEST-REPORT.md`): keyboard access and WCAG AA contrast throughout the window, a symbol as well as a colour for each kind of result, video IDs validated before use in any path, damaged settings files tolerated, and a fix for very slow search highlighting in long transcripts.
-- **Tests:** 131 pytest tests (also run on Windows by the build workflow), covering the pure functions, offline end-to-end runs, negative and edge cases, first-run setup and updates, and the window driving a run, chips, filters, search, the editor, auto-scroll, Pause/Resume, settings and an automatic merge.
+- **Tests:** 135 pytest tests (also run on Windows by the build workflow), covering the pure functions, offline end-to-end runs, negative and edge cases, first-run setup and updates, and the window driving a run, chips, filters, search, the editor, auto-scroll, Pause/Resume, settings and an automatic merge.
 
 ## Decisions taken
 
@@ -57,8 +58,9 @@ yt-slurp 0.2.4 is released as a single self-contained `yt-slurp.exe` on GitHub's
 
 ## Not yet tested
 
-- The Update button end to end. It needs a release newer than 0.2.0 to update to.
-- The "Setting up yt-slurp" progress window (0.2.4) in the `.exe`. It is tested from source. First-run downloads themselves now work: on 24th October 2026 the 0.2.3 `.exe` installed ffmpeg and Deno on the HP laptop, after 0.2.2 had failed there with "certificate has expired" (an expired ISRG Root X2 cross-sign in the Windows CA store; 0.2.3 checks against certifi). ffmpeg took about 13 minutes from gyan.dev.
+- The Update button end to end, from 0.2.3 to 0.2.4.
+- The "Setting up yt-slurp" window in the `.exe`. It is tested from source; the 0.2.3 to 0.2.4 update is the first chance to see it in a build.
+- When running tests on Windows, put `%LOCALAPPDATA%\yt-slurp\tools` on PATH first, or the 24 tests that need ffmpeg are skipped. The editor test `test_edit_save_replace_undo` timed out once in a full run on 24th October 2026 and passed on reruns; watch for it recurring.
 - Reading browser cookies for members-only or age-restricted videos.
 
 ## Making a release

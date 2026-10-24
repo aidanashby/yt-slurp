@@ -42,7 +42,7 @@ You don't need to install anything else. yt-slurp is a single program with every
 
 After that, double-clicking `yt-slurp.exe` opens the window in a few seconds. If yt-slurp is already open, it brings that window to the front instead of opening a second one.
 
-**Updates.** A few seconds after yt-slurp starts, it checks GitHub for a newer version. If there is one, a blue **Update** button appears at the right of the menu bar. Select it to download the new version and restart; your settings and results are kept. You can also check by hand: select **Help**, then **Check for updates**.
+**Updates.** A few seconds after yt-slurp starts, it checks GitHub for a newer version. If there is one, a blue **Update** button appears at the right of the menu bar. Select it, and a window shows the new version downloading before yt-slurp restarts; your settings and results are kept. You can also check by hand: select **Help**, then **Check for updates**.
 
 **Where your results go.** By default, results go in `Documents\yt-slurp`. To change this, go to **Settings**, then **Where things go**.
 
@@ -150,6 +150,7 @@ Select **Settings** in the menu bar. Settings are saved for next time.
 | The setup window stops with a message | Follow the advice in the message. To ask for help, copy the window's text: right-click its title bar, choose **Edit**, then **Select All**, and press **Enter** |
 | "Windows protected your PC" | Select **More info**, then **Run anyway**. It appears because yt-slurp isn't signed with a paid certificate |
 | Double-clicking `yt-slurp.exe` seems to do nothing | yt-slurp may already be open behind other windows. Check the taskbar |
+| Setup stops with "certificate verify failed: certificate has expired" | Versions before 0.2.3 fail this way on some PCs. Download the latest `yt-slurp.exe` from the [releases page](https://github.com/aidanashby/yt-slurp/releases/latest) and run it instead |
 | A message about a JavaScript runtime, or ffmpeg missing | Restart yt-slurp and select **Yes** when it offers to download them. Downloads need an internet connection |
 | "Cannot read browser cookies" | Chrome, Edge and Brave lock their cookies while open. Close the browser completely (check the system tray), or sign in to YouTube in Firefox and choose Firefox |
 | "Confirm you're not a bot" | YouTube is limiting requests. Wait an hour, choose a slower pace in Settings, and slurp the same link again |
