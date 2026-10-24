@@ -82,7 +82,8 @@ def test_first_run_setup_shows_a_progress_window(app, monkeypatch):
     monkeypatch.setattr(gui.setup, "missing_tools", lambda: ["ffmpeg"])
     monkeypatch.setattr(gui.setup, "install_tool", fake_install)
     monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
-    app.check_tools()
+    # The window runs its own tool check just after opening; calling it here as well would start two setups
+    pump(app, lambda: app.setup_window is not None)
     win = app.setup_window
     pump(app, lambda: "21 of 115 MB" in win.detail.cget("text"))
     assert win.top.winfo_viewable()
