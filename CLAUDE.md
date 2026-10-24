@@ -10,8 +10,6 @@
 
 - British English. No em dashes, and no double hyphens used as dashes.
 
-- Whenever you ask the user to push or publish a release, give them a snippet to paste into Claude Code in their terminal that tells it exactly what to do.
-
 ## Project
 
 - Read `STATUS.md` first. It records what is done, what is untested and what comes next.
