@@ -1,0 +1,27 @@
+{
+  "dependencies": [
+    {
+      "name": "Python",
+      "check": { "run": "python --version" },
+      "install": "winget install --id Python.Python.3.12 -e --accept-package-agreements --accept-source-agreements"
+    },
+    {
+      "name": "FFmpeg",
+      "check": { "run": "ffmpeg -version" },
+      "install": "winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements"
+    },
+    {
+      "name": "Deno",
+      "purpose": "yt-dlp needs it to read YouTube when run from source",
+      "check": { "run": "deno --version" },
+      "install": "winget install --id DenoLand.Deno -e --accept-package-agreements --accept-source-agreements"
+    },
+    {
+      "name": "Python venv",
+      "purpose": "yt-dlp and pytest in .venv, to run from source",
+      "perRepo": true,
+      "check": { "run": ".venv\\Scripts\\python -c \"import yt_dlp\"" },
+      "install": "python -m venv .venv && .venv\\Scripts\\python -m pip install -e \".[dev]\""
+    }
+  ]
+}
