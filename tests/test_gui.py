@@ -69,6 +69,29 @@ def run_fake(app):
     assert app.stage == "Finished."
 
 
+def test_first_run_setup_shows_a_progress_window(app, monkeypatch):
+    import threading
+    import yt_slurp_gui as gui
+    release = threading.Event()
+
+    def fake_install(name, progress=None, step=None):
+        progress(21_000_000, 115_000_000)
+        release.wait(10)
+        step(f"Unpacking {name}")
+
+    monkeypatch.setattr(gui.setup, "missing_tools", lambda: ["ffmpeg"])
+    monkeypatch.setattr(gui.setup, "install_tool", fake_install)
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    app.check_tools()
+    win = app.setup_window
+    pump(app, lambda: "21 of 115 MB" in win.detail.cget("text"))
+    assert win.top.winfo_viewable()
+    assert win.step.cget("text") == "Downloading ffmpeg (1 of 1)"
+    release.set()
+    pump(app, lambda: app.setup_window is None)
+    assert app.stage == "Ready."
+
+
 def test_slurp_shows_everything_together_and_auto_merges(app):
     run_fake(app)
     kinds = [it["kind"] for it in app.items]

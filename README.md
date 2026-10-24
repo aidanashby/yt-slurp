@@ -37,7 +37,7 @@ You don't need to install anything else. yt-slurp is a single program with every
 2. Move it somewhere you'll keep it, such as your Desktop or a `yt-slurp` folder in Documents.
 3. Double-click **`yt-slurp.exe`**.
 4. The first time, Windows may show **"Windows protected your PC"**. This appears for any new program that isn't signed with a paid certificate. Select **More info**, then **Run anyway**.
-5. yt-slurp opens and checks for ffmpeg, which makes audio files, and Deno, which yt-dlp needs to read YouTube. If either is missing, it asks to download them. Select **Yes**: it takes a minute or two, happens once, needs no admin rights, and puts them in yt-slurp's own folder (`%LOCALAPPDATA%\yt-slurp\tools`). If you already have them installed, yt-slurp uses those.
+5. yt-slurp opens and checks for ffmpeg, which makes audio files, and Deno, which yt-dlp needs to read YouTube. If either is missing, it asks to download them. Select **Yes**: a window shows the progress. It happens once (it can take 15 minutes or more on a slow connection), needs no admin rights, and puts them in yt-slurp's own folder (`%LOCALAPPDATA%\yt-slurp\tools`). If you already have them installed, yt-slurp uses those.
 6. A short "How to use yt-slurp" guide appears. You're ready.
 
 After that, double-clicking `yt-slurp.exe` opens the window in a few seconds. If yt-slurp is already open, it brings that window to the front instead of opening a second one.

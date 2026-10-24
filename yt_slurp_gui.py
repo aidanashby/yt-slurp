@@ -770,6 +770,7 @@ class App:
         self.smoke_waiting = False
         self.log_lines: list[str] = []
         self.log_window = None
+        self.setup_window = None
         self.stage = "Ready."
         self.counts_text = ""
         self.matches: list[int] = []
@@ -1791,10 +1792,19 @@ class App:
         elif kind == "setup":
             _, label, done, total = msg
             self.bar.configure(mode="determinate", maximum=max(total, 1), value=done)
-            mb = f"{done / 1e6:.0f} of {total / 1e6:.0f} MB" if total else f"{done / 1e6:.0f} MB"
-            self.stage = f"{label}: {mb}"
+            self.stage = f"{label}: {setup.download_text(done, total)}"
             self.update_status()
+            if self.setup_window:
+                self.setup_window.show_bytes(label, done, total)
+        elif kind == "setup_step":
+            self.stage = msg[1]
+            self.update_status()
+            if self.setup_window:
+                self.setup_window.show_step(msg[1])
         elif kind == "setup_done":
+            if self.setup_window:
+                self.setup_window.close()
+                self.setup_window = None
             self.bar.configure(value=0)
             self.slurp_btn.set_enabled(True)
             self.update_btn.set_enabled(True)
@@ -1930,19 +1940,23 @@ class App:
                 "Finish setting up yt-slurp",
                 "yt-slurp needs two free tools that aren't on this computer yet:\n\n"
                 + "\n".join(f"\u2022 {names[m]}" for m in missing)
-                + "\n\nDownload them now? This happens once, takes a minute or two, and needs no admin "
-                  "rights. They go in yt-slurp's own folder."):
+                + "\n\nDownload them now? This happens once and needs no admin rights. They go in "
+                  "yt-slurp's own folder. On a slow connection it can take 15 minutes or more."):
             self.stage = "ffmpeg or Deno is missing. Restart yt-slurp to install them."
             self.update_status()
             return
         self.slurp_btn.set_enabled(False)
+        self.setup_window = SetupWindow(self.root, "Setting up yt-slurp")
 
         def work():
             try:
-                for name in missing:
-                    def prog(done, total, name=name):
-                        self.events.put(("setup", f"Downloading {name}", done, total))
-                    setup.install_tool(name, prog)
+                for i, name in enumerate(missing, 1):
+                    label = f"Downloading {setup.TOOL_NAMES[name]} ({i} of {len(missing)})"
+                    self.events.put(("setup_step", label))
+
+                    def prog(done, total, label=label):
+                        self.events.put(("setup", label, done, total))
+                    setup.install_tool(name, prog, lambda text: self.events.put(("setup_step", text)))
                 setup.use_tools()
                 self.events.put(("setup_done", None))
             except Exception as e:  # network or disk problem: say so, don't crash
@@ -1983,6 +1997,7 @@ class App:
                                              "new version, then restarts. Your settings and results are kept."):
             return
         self.update_btn.set_enabled(False)
+        self.setup_window = SetupWindow(self.root, f"Updating yt-slurp to {info['version']}")
 
         def work():
             try:
@@ -2300,6 +2315,45 @@ class LogWindow:
 
     def close(self):
         self.app.log_window = None
+        self.top.destroy()
+
+
+class SetupWindow:
+    """Downloads of the tools or an update, shown in the middle of the window.
+    Closing it only hides it: the status bar keeps showing the progress."""
+
+    def __init__(self, parent, title):
+        self.top, frame = modal(parent, title)
+        tk.Label(frame, text=title, bg=CARD, fg=TEXT, font=(FONT, 11, "bold")).pack(anchor="w")
+        self.step = tk.Label(frame, text="", bg=CARD, fg=TEXT, font=(FONT, 10), anchor="w")
+        self.step.pack(fill="x", pady=(10, 6))
+        self.bar = ttk.Progressbar(frame, length=380)
+        self.bar.pack()
+        self.detail = tk.Label(frame, text="", bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w")
+        self.detail.pack(fill="x", pady=(6, 0))
+        self.top.protocol("WM_DELETE_WINDOW", self.top.withdraw)
+        self.started = None
+        self.show_step("Connecting...")
+
+    def show_step(self, text):
+        """A step with no known length: the bar moves to show it's working."""
+        self.step.configure(text=text)
+        self.detail.configure(text="")
+        self.bar.configure(mode="indeterminate")
+        self.bar.start(15)
+        self.started = None
+
+    def show_bytes(self, text, done, total):
+        if self.started is None or self.step.cget("text") != text:
+            # Time from the first bytes, so connecting doesn't count against the rate
+            self.bar.stop()
+            self.step.configure(text=text)
+            self.started = time.monotonic()
+        self.bar.configure(mode="determinate", maximum=max(total, 1), value=done)
+        self.detail.configure(text=setup.download_text(done, total, time.monotonic() - self.started))
+
+    def close(self):
+        self.bar.stop()
         self.top.destroy()
 
 

@@ -82,6 +82,24 @@ def test_install_tool_extracts_and_checks_checksum(home, monkeypatch):
     assert seen and seen[-1][0] == len(archive)
 
 
+def test_download_text():
+    assert setup.download_text(21_000_000, 115_000_000) == "21 of 115 MB"
+    assert setup.download_text(5_000_000, 0, 10) == "5 MB"
+    # 21 MB in 180 s leaves 94 MB at the same rate: about 806 s, rounded up to 14 minutes
+    assert setup.download_text(21_000_000, 115_000_000, 180) == "21 of 115 MB, about 14 minutes left"
+    assert setup.download_text(110_000_000, 115_000_000, 60) == "110 of 115 MB, less than a minute left"
+    assert setup.download_text(1_000_000, 115_000_000, 1) == "1 of 115 MB"  # too soon to estimate
+
+
+def test_install_tool_names_each_step_after_the_download(home, monkeypatch):
+    archive = make_zip({"deno.exe": "D"})
+    monkeypatch.setattr(setup, "_open", lambda url: FakeResponse(archive) if url == setup.DENO_URL
+                        else (_ for _ in ()).throw(OSError("not found")))
+    steps = []
+    setup.install_tool("deno", step=steps.append)
+    assert steps == ["Checking the Deno download", "Unpacking Deno"]
+
+
 def test_install_tool_refuses_a_bad_checksum(home, monkeypatch):
     archive = make_zip({"deno.exe": "D"})
 

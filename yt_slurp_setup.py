@@ -31,6 +31,7 @@ EXE_ASSET = "yt-slurp.exe"
 
 FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 DENO_URL = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+TOOL_NAMES = {"ffmpeg": "ffmpeg", "deno": "Deno"}
 TIMEOUT_S = 30
 USER_AGENT = "yt-slurp"
 
@@ -169,17 +170,32 @@ def extract_member(zip_path: Path, wanted: str, dest: Path) -> None:
     raise RuntimeError(f"{wanted} was not found in the download")
 
 
-def install_tool(name: str, progress=None) -> None:
+def download_text(done: int, total: int, seconds: float | None = None) -> str:
+    """'21 of 115 MB', plus the time left once seconds of downloading give a fair rate."""
+    text = f"{done / 1e6:.0f} of {total / 1e6:.0f} MB" if total else f"{done / 1e6:.0f} MB"
+    if total and done and seconds and seconds >= 3:
+        left = (total - done) * seconds / done
+        text += (", less than a minute left" if left < 60
+                 else f", about {-(-int(left) // 60)} minute{'s' if left > 60 else ''} left")
+    return text
+
+
+def install_tool(name: str, progress=None, step=None) -> None:
     """Download ffmpeg (with ffprobe) or Deno into yt-slurp's tools folder,
-    checking the publisher's SHA-256 checksum when one is published."""
+    checking the publisher's SHA-256 checksum when one is published.
+    step(text) names each stage after the download."""
     url = {"ffmpeg": FFMPEG_URL, "deno": DENO_URL}[name]
+    label = TOOL_NAMES[name]
+    say = step or (lambda text: None)
     tools_dir().mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         zip_path = Path(tmp) / f"{name}.zip"
         download(url, zip_path, progress)
+        say(f"Checking the {label} download")
         expected = published_checksum(url)
         if expected and sha256(zip_path) != expected:
-            raise RuntimeError(f"The {name} download did not match its published checksum, so it was not used.")
+            raise RuntimeError(f"The {label} download did not match its published checksum, so it was not used.")
+        say(f"Unpacking {label}")
         members = ["ffmpeg.exe", "ffprobe.exe"] if name == "ffmpeg" else ["deno.exe"]
         for m in members:
             extract_member(zip_path, m, tools_dir() / m)

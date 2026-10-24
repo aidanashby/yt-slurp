@@ -1,10 +1,10 @@
 # yt-slurp: status
 
-Last updated: 24th October 2026 (0.2.3 release)
+Last updated: 24th October 2026 (0.2.4 release)
 
 ## Where it is
 
-yt-slurp 0.2.3 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works. Live use on more channels, the first-run downloads on a clean machine and the Update button (needs a later release to test) are the next things to watch.
+yt-slurp 0.2.4 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works. Live use on more channels, the first-run downloads on a clean machine and the Update button (needs a later release to test) are the next things to watch.
 
 ## Done
 
@@ -58,7 +58,7 @@ yt-slurp 0.2.3 is released as a single self-contained `yt-slurp.exe` on GitHub's
 ## Not yet tested
 
 - The Update button end to end. It needs a release newer than 0.2.0 to update to.
-- First-run downloads of ffmpeg and Deno on a machine that has neither. On 24th October 2026 the 0.2.2 `.exe` failed on the HP laptop with "certificate has expired" for gyan.dev: Python trusted the Windows CA store, which holds an expired ISRG Root X2 cross-sign. Fixed in 0.2.3 by checking against certifi; the fix works from source on that laptop, but the fixed `.exe` is not yet tested.
+- The "Setting up yt-slurp" progress window (0.2.4) in the `.exe`. It is tested from source. First-run downloads themselves now work: on 24th October 2026 the 0.2.3 `.exe` installed ffmpeg and Deno on the HP laptop, after 0.2.2 had failed there with "certificate has expired" (an expired ISRG Root X2 cross-sign in the Windows CA store; 0.2.3 checks against certifi). ffmpeg took about 13 minutes from gyan.dev.
 - Reading browser cookies for members-only or age-restricted videos.
 
 ## Making a release

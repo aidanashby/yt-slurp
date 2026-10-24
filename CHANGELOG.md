@@ -2,6 +2,12 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
+## 0.2.4 (24th October 2026)
+
+### Changed
+- Downloading ffmpeg and Deno on first run, or an update, now opens a "Setting up yt-slurp" window in the middle of the screen. It names each step (connecting, downloading, checking, unpacking), shows a progress bar with megabytes done and the time left, and closes when it finishes. Before, the only sign was small text at the bottom of the window.
+- The first-run question no longer says the download takes "a minute or two": gyan.dev can be slow, and ffmpeg alone is over 100 MB.
+
 ## 0.2.3 (24th October 2026)
 
 ### Fixed
