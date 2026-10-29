@@ -767,7 +767,6 @@ class App:
         self.shown: list[int] = []
         self.current_folder: Path | None = None
         self.list_file = ""
-        self.smoke_waiting = False
         self.log_lines: list[str] = []
         self.log_window = None
         self.setup_window = None
@@ -1772,10 +1771,6 @@ class App:
         elif kind == "item":
             _, ikind, folder, path, text, title, vid = msg
             self.add_item(ikind, folder, path, text, title, vid)
-            if self.smoke_waiting and ikind == "transcript" and folder.name == "smoke-test":
-                self.smoke_waiting = False
-                messagebox.showinfo(APP_NAME, "Test passed. The transcription app kept the filenames, and the "
-                                              "two parts were merged into one transcript.")
         elif kind == "ask":
             _, akind, data, reply = msg
             before = self.stage
@@ -1880,11 +1875,6 @@ class App:
 
     def open_results(self):
         open_path(self.current_folder or Path(self.settings["output"]))
-
-    def open_sub(self, sub):
-        folder = self.folder_or_ask()
-        if folder:
-            open_path(folder / sub)
 
     def open_wavs(self):
         folder = self.folder_or_ask()
@@ -2015,34 +2005,6 @@ class App:
                                       f"assistants such as Claude, ChatGPT and Gemini Notebook.\n\nhttps://github.com/{setup.REPO}")
 
     # ----- tools -----
-
-    def smoke_test(self):
-        folder = Path(self.settings["output"]) / "smoke-test"
-        if (folder / "manifest.csv").exists():
-            if not messagebox.askyesno(APP_NAME, "A smoke test already exists. Make fresh test files?"):
-                return
-            import shutil
-            shutil.rmtree(folder, ignore_errors=True)
-
-        def after(code):
-            if code != 0:
-                return
-            self.show_folder(folder)
-            self.smoke_waiting = True
-            open_path(folder / ys.DIR_NEEDS)
-            messagebox.showinfo(
-                APP_NAME,
-                "Two short test WAVs are ready, and their folder is open.\n\n"
-                "1. Click Launch transcription app, and drag both WAVs into it.\n"
-                "2. When they finish, click Save as .txt for each one.\n"
-                f"3. Save them into:\n{folder / ys.DIR_WHISPER}\n"
-                "   Keep the suggested name. Check it still has the [AbC-d_123xY] part.\n\n"
-                "yt-slurp merges them by itself and tells you when the test has passed. If nothing "
-                "happens a few seconds after you save both, the filenames were changed: compare "
-                "the saved names with the WAV names, and keep the [AbC-d_123xY] part exactly.")
-
-        self.clear_items()
-        self.start(["smoke-wav", str(folder)], "Making the test WAVs...", after)
 
     def self_test(self):
         if self.busy():
