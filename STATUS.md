@@ -1,10 +1,10 @@
 # yt-slurp: status
 
-Last updated: 25th November 2026 (0.2.5 prepared, not released)
+Last updated: 25th November 2026 (0.2.5 release)
 
 ## Where it is
 
-Version 0.2.5 is written and in use on the owner's Aero laptop, but not committed or released. 0.2.4 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works, including the first-run downloads on a laptop that had neither tool (0.2.3, HP laptop). Live use on more channels and the Update button (0.2.3 to 0.2.4 is the first real test) are the next things to watch.
+yt-slurp 0.2.5 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works, including the first-run downloads on a laptop that had neither tool (0.2.3, HP laptop). Live use on more channels and the Update button (0.2.3 to 0.2.4 is the first real test) are the next things to watch.
 
 ## Done
 
@@ -40,7 +40,7 @@ Version 0.2.5 is written and in use on the owner's Aero laptop, but not committe
 - **Pre-release review** (see `docs/TEST-REPORT.md`): keyboard access and WCAG AA contrast throughout the window, a symbol as well as a colour for each kind of result, video IDs validated before use in any path, damaged settings files tolerated, and a fix for very slow search highlighting in long transcripts.
 - **Tests:** 204 pytest tests (also run on Windows by the build workflow), covering the pure functions, offline end-to-end runs, negative and edge cases, first-run setup and updates, yt-dlp updates and repairs, colour contrast, and the window driving a run, chips, filters, search, the editor, auto-scroll, Pause/Resume, settings and an automatic merge.
 
-- **0.2.5 (not released):** yt-dlp updates itself outside the `.exe` (`yt_slurp_engine.py`; `hooks/` bundles the whole standard library so newer versions load); repair and retry during a slurp; single-video links; several links as blocks, sharing one folder; a warning over 500 videos that lists channels; ffmpeg and Deno checked by running them; Try again and Copy details; the dark look.
+- **0.2.5:** yt-dlp updates itself outside the `.exe` (`yt_slurp_engine.py`; `hooks/` bundles the whole standard library so newer versions load); repair and retry during a slurp; single-video links; several links as blocks, sharing one folder; a warning over 500 videos that lists channels; ffmpeg and Deno checked by running them; Try again and Copy details; the dark look.
 
 ## Decisions taken
 

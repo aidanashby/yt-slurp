@@ -2,7 +2,7 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
-## 0.2.5 (unreleased)
+## 0.2.5 (25th November 2026)
 
 ### Added
 - yt-slurp keeps yt-dlp up to date by itself, without a new yt-slurp release. It checks PyPI once a day when a slurp starts, skips releases under 48 hours old (except to repair a failure), verifies the download's checksum, tests it separately, and keeps the previous copy if the new one doesn't work.
@@ -23,6 +23,7 @@ All notable changes to yt-slurp. Dates are in UK format.
 
 ### Fixed
 - A YouTube change that broke yt-dlp's solver was reported as Deno being missing.
+- Start again deletes nothing until every question is answered, and different channels or playlists with long names no longer share a folder.
 
 ## 0.2.4 (24th October 2026)
 
