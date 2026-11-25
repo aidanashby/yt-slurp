@@ -110,9 +110,11 @@ def test_output_path_too_long_is_refused(fake):
 
 def test_missing_ffmpeg_gives_install_advice(monkeypatch):
     monkeypatch.setattr(ys.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ys.setup, "missing_tools", lambda: ["ffmpeg"])
+    monkeypatch.setattr(ys.setup, "install_tool", lambda *a: (_ for _ in ()).throw(OSError("offline")))
     with pytest.raises(ys.Stop) as e:
         ys.preflight()
-    assert "winget install Gyan.FFmpeg" in str(e.value)
+    assert "ffmpeg" in str(e.value) and "winget" not in str(e.value)
 
 
 def test_folder_locked_by_another_run(fake):

@@ -1,5 +1,6 @@
 """Drive the real window with a fake network layer. Skipped without Tkinter or a display."""
 
+import ctypes.wintypes
 import os
 import time
 
@@ -420,3 +421,172 @@ def test_button_grows_to_fit_longer_text(app):
     btn.set_text("Up")
     assert int(btn.cget("width")) == btn.w  # shrinking text keeps the width
     btn.destroy()
+
+
+def test_links_become_blocks(app):
+    box = app.url_box
+    a, b = "https://www.youtube.com/@one", "https://youtu.be/dQw4w9WgXcQ"
+    app.url_var.set(a)
+    box.clicked(type("E", (), {"widget": app.root})())  # click elsewhere
+    assert box.links == [a] and app.url_var.get() == ""
+    app.root.clipboard_clear()
+    app.root.clipboard_append(f"{b}, {a}\nhttps://www.youtube.com/@two/shorts")
+    assert box.paste(None) == "break"
+    assert box.links == [a, b, "https://www.youtube.com/@two/shorts"]
+    box.edit(b)
+    assert app.url_var.get() == b and b not in box.links
+    app.url_var.set("https://youtu.be/aaaaaaaaaaa")
+    box.commit()
+    assert box.links[1] == "https://youtu.be/aaaaaaaaaaa"  # same place
+    box.edit(a)
+    box.escape(None)
+    assert a in box.links
+    box.remove(a)
+    assert len(box.get()) == 2
+    app.root.update()
+
+
+def test_lone_video_asks_but_several_do_not(app, monkeypatch):
+    import yt_slurp_gui as gui
+    asked, started = [], []
+
+    def dialog(self, parent, q, options):
+        asked.append([k for k, _ in options])
+        self.result = "channel"
+    monkeypatch.setattr(gui.ChoiceDialog, "__init__", dialog)
+    monkeypatch.setattr(app, "start", lambda argv, label, after=None: started.append(argv))
+    v, w = "https://youtu.be/dQw4w9WgXcQ", "https://www.youtube.com/watch?v=aaaaaaaaaaa"
+    app.url_box.set_links([v])
+    app.slurp()
+    assert asked == [["video", "channel", "none"]] and "--whole-channel" in started[-1]
+    app.url_box.set_links([w + "&list=PL1"])
+    app.slurp()
+    assert asked[-1] == ["video", "playlist", "channel", "none"] and started[-1][0] == w
+    app.url_box.set_links([v, w + "&list=PL1", "https://www.youtube.com/@x"])
+    app.slurp()
+    assert len(asked) == 2 and started[-1][1] == w and "--whole-channel" not in started[-1]
+
+
+def test_link_box_is_two_rows_scrolls_and_clears(app):
+    box = app.url_box
+    app.root.update()
+    height = box.canvas.winfo_height()
+    assert not box.bar.winfo_manager() and not box.clear_btn.winfo_manager()
+    entry = box.entry
+    box.set_links([f"https://www.youtube.com/@channel{i}" for i in range(60)])
+    app.root.update()
+    assert box.canvas.winfo_height() == height and box.bar.winfo_manager() and box.clear_btn.winfo_manager()
+    assert box.entry is entry and entry.winfo_reqheight() <= box.row_h
+    box.clear()
+    app.root.update()
+    assert box.get() == [] and not box.bar.winfo_manager() and box.hint.winfo_manager()
+
+
+def test_text_contrast_meets_aa():
+    import yt_slurp_gui as g
+
+    def lum(c):
+        v = [int(c[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        v = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in v]
+        return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]
+
+    def ratio(a, b):
+        hi, lo = sorted((lum(a), lum(b)), reverse=True)
+        return (hi + 0.05) / (lo + 0.05)
+    pairs = [(g.TEXT, b) for b in (g.BG, g.CARD, g.FIELD, g.SLATE, g.SLATE_DARK, g.MENU_BG, g.SELECTED,
+                                   g.MATCH_BG, g.CURRENT_BG)]
+    pairs += [(g.MUTED, b) for b in (g.CARD, g.FIELD, g.MENU_BG)] + [("#ffffff", g.ACCENT), ("#ffffff", g.ACCENT_DARK)]
+    pairs += [(g.LINK, g.CARD), (g.LINK, g.FIELD), ("#0f0f0f", g.LINK), (g.DANGER, g.SLATE)]
+    pairs += [(colour, g.FIELD) for _, colour, _ in g.KINDS.values()]
+    for a, b in pairs:
+        assert ratio(a, b) >= 4.5, (a, b, ratio(a, b))
+
+
+def test_many_dialog_leaves_channels_out(app, monkeypatch):
+    import yt_slurp_gui as gui
+    groups = [(f"Channel {i}", 100 - i) for i in range(12)]
+    monkeypatch.setattr(app.root, "wait_window", lambda top: None, raising=False)
+    dialog = gui.ManyDialog(app.root, groups)
+    app.root.update()
+    assert dialog.go.text == f"Get {sum(n for _, n in groups):,} videos"
+    dialog.toggle("Channel 0")
+    assert dialog.go.text == f"Get {sum(n for _, n in groups) - 100:,} videos"
+    dialog.toggle("Channel 1")
+    dialog.toggle("Channel 1")  # put back
+    dialog.ok()
+    assert dialog.result == {"Channel 0"}
+
+
+def test_drop_menu(app):
+    ran = []
+    pump(app, lambda: app.root.winfo_viewable())
+    app.root.update()
+    m = app.type_menu.__class__(app.root)
+    m.add_command(label="One", command=lambda: ran.append(1))
+    m.add_separator()
+    m.add_command(label="Two", command=lambda: ran.append(2))
+    m.popup(app.root.winfo_rootx() + 5000, app.root.winfo_rooty())
+    app.root.update()
+    assert len(m.labels) == 2
+    m.labels[1].event_generate("<Button-1>")
+    app.root.update()
+    assert ran == [2] and m.top is None
+    m.popup(0, 0)
+    app.root.update()
+    app.root.event_generate("<Button-1>")
+    assert m.top is None
+
+
+def test_menu_buttons_open_with_a_real_click(app):
+    pump(app, lambda: app.root.winfo_viewable())
+    app.root.update()
+    # Stacked in the order they look: Settings (a dialog), Tools, Help
+    tools, helpm = [w for w in app.menu_bar.winfo_children() if w is not app.update_btn][1:]
+    for b, x in ((tools, 5), (helpm, 5), (app.slurp_btn, app.slurp_btn.w - 5)):
+        before = set(app.root.winfo_children())
+        b.event_generate("<Button-1>", x=x, y=5)
+        app.root.update()
+        menus = [w for w in set(app.root.winfo_children()) - before if w.winfo_class() == "Toplevel"]
+        assert len(menus) == 1 and menus[0].winfo_viewable()
+        app.root.event_generate("<Button-1>")  # a click elsewhere closes it
+        assert not menus[0].winfo_exists()
+
+
+def test_fits_a_snapped_half_screen(app):
+    app.root.geometry("683x700")
+    app.root.update()
+    assert app.root.winfo_width() == 683
+    for w in (app.slurp_btn, app.pause_btn, app.stop_btn, app.title_bar.buttons["Close"] if os.name == "nt" else app.stop_btn):
+        assert w.winfo_rootx() + w.winfo_width() <= app.root.winfo_rootx() + 683
+    assert app.url_box.winfo_width() > 150
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows only")
+def test_slim_title_bar(app):
+    import ctypes
+    import yt_slurp_gui as gui
+    pump(app, lambda: app.root.winfo_viewable())
+    app.root.update()
+    style = ctypes.windll.user32.GetWindowLongW(gui.window_handle(app.root), -16)
+    assert style & 0xC00000 == 0xC00000 and style & 0x40000  # Windows still animates and resizes it
+    rect = ctypes.wintypes.RECT()
+    ctypes.windll.user32.GetWindowRect(ctypes.wintypes.HWND(gui.window_handle(app.root)), ctypes.byref(rect))
+    assert app.title_bar.winfo_rooty() - rect.top < 5  # but its caption takes no room
+    for state in ("zoomed", "normal"):
+        app.title_bar.toggle()
+        app.root.update()
+        assert app.root.state() == state
+    closed = []
+    app.root.protocol("WM_DELETE_WINDOW", lambda: closed.append(1))
+    app.title_bar.close()
+    assert closed == [1]
+
+
+def test_snap_fix_only_moves_a_misplaced_window():
+    import yt_slurp_gui as gui
+    second = (2560, 0, 4480, 1032)
+    left, right = (2553, 0, 3527, 1039), (3513, 0, 4487, 1039)
+    assert gui.snap_fix(left, second, (2561, 500)) is None
+    assert gui.snap_fix((3830, 0, 5291, 1100), second, (2561, 500)) == (2560, *left[1:])  # as Windows misplaced it
+    assert gui.snap_fix((3830, 0, 5291, 1100), second, (4479, 500)) == right
+    assert gui.snap_fix((3830, 0, 5291, 1100), second, (2561, 2)) == (2560, 0, 3527, 523)  # a corner

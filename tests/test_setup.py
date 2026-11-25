@@ -48,7 +48,10 @@ def test_version_compare():
     assert not setup.newer("", "0.2.0")
 
 
-def test_missing_tools_and_use_tools(home):
+def test_missing_tools_and_use_tools(home, monkeypatch):
+    monkeypatch.setattr(setup, "tool_works", lambda p: True)
+    monkeypatch.setattr(setup.Path, "home", lambda: home)
+    monkeypatch.setenv("ProgramFiles", str(home))
     assert set(setup.missing_tools()) == {"ffmpeg", "deno"}
     tdir = setup.tools_dir()
     tdir.mkdir(parents=True)
@@ -62,6 +65,7 @@ def test_missing_tools_and_use_tools(home):
 
 
 def test_install_tool_extracts_and_checks_checksum(home, monkeypatch):
+    monkeypatch.setattr(setup, "tool_works", lambda p: True)
     archive = make_zip({"ffmpeg-7.1-essentials_build/bin/ffmpeg.exe": "FF",
                         "ffmpeg-7.1-essentials_build/bin/ffprobe.exe": "FP",
                         "ffmpeg-7.1-essentials_build/README.txt": "r"})
@@ -92,6 +96,7 @@ def test_download_text():
 
 
 def test_install_tool_names_each_step_after_the_download(home, monkeypatch):
+    monkeypatch.setattr(setup, "tool_works", lambda p: True)
     archive = make_zip({"deno.exe": "D"})
     monkeypatch.setattr(setup, "_open", lambda url: FakeResponse(archive) if url == setup.DENO_URL
                         else (_ for _ in ()).throw(OSError("not found")))

@@ -1,5 +1,7 @@
 # yt-slurp: pre-release review and test report
 
+> **Historical.** This reviews version 0.1 (October 2026, with an update note for 0.2.0). Later versions change much of it: the launcher is gone, single videos are accepted and the window has new colours. See [CHANGELOG.md](../CHANGELOG.md) and [STATUS.md](../STATUS.md).
+
 > **Update, 14th October 2026 (0.2.0).** Since this review:
 > - `yt-slurp.bat` was replaced by a self-contained `yt-slurp.exe`. GitHub Actions builds it on Windows, runs all 128 tests there, and checks that it starts. It has run on the owner's laptop.
 > - The `.exe` downloads ffmpeg and Deno over HTTPS and checks published SHA-256 checksums. Tested here with simulated downloads, including a tampered one, which was refused.

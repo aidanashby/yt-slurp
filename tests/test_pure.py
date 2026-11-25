@@ -144,8 +144,14 @@ def test_iso_date():
     ("https://www.youtube.com/c/Name/featured", "channel", "https://www.youtube.com/c/Name"),
     ("https://www.youtube.com/playlist?list=PL123", "playlist", "https://www.youtube.com/playlist?list=PL123"),
     ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123", "playlist", "https://www.youtube.com/playlist?list=PL123"),
-    ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "video", None),
-    ("https://youtu.be/dQw4w9WgXcQ", "video", None),
+    ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=5s", "video", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+    ("https://youtu.be/dQw4w9WgXcQ?si=abc", "video", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+    ("https://www.youtube.com/live/dQw4w9WgXcQ", "video", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+    ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ", "video",
+     "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+    ("https://www.youtube.com/watch?v=short", "unknown", None),
+    *[(f"https://www.youtube.com/@SomeHandle{tab}", "channel", "https://www.youtube.com/@SomeHandle")
+      for tab in ("/", "/shorts", "/featured", "/streams", "/playlists", "/videos?view=0", "/about")],
     ("https://www.youtube.com/shorts/dQw4w9WgXcQ", "video", None),
     ("https://www.youtube.com/watch?v=x&list=RDx", "unknown", None),
     ("https://vimeo.com/123", "unknown", None),
@@ -335,3 +341,19 @@ def test_old_header_to_md():
     md = ys.old_header_to_md(old)
     assert md.startswith("# T\n") and md.rstrip().endswith("Hi.")
     assert ys.old_header_to_md("just text") is None
+
+
+def test_split_links_cleans_up_any_list():
+    a, b, c = "https://youtu.be/dQw4w9WgXcQ", "https://www.youtube.com/@x", "youtube.com/@y/shorts"
+    for text in (f"{a}\n{b}\r\n{c}", f"{a},{b}; {c}", f"1. {a}\n2. <{b}>\n- {c}\n", f"see {a} and ({b}), {c}. {b}"):
+        assert ys.split_links(text) == [a, b, c]
+    assert ys.split_links(a + b) == [a, b]
+    assert ys.split_links("hello") == ["hello"]
+    assert ys.split_links("  ") == []
+
+
+@pytest.mark.parametrize("bad", ["https://[x", "https://a[b.com/youtube", "http://[youtu.be/abc", "https://you\u2100tube.com/x"])
+def test_a_malformed_link_does_not_break_a_paste(bad):
+    good = "https://youtu.be/dQw4w9WgXcQ"
+    assert ys.classify_url(bad)[0] == "unknown"
+    assert good in ys.split_links(f"{bad} {good}")

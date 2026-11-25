@@ -32,7 +32,10 @@ EXE_ASSET = "yt-slurp.exe"
 FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 DENO_URL = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
 TOOL_NAMES = {"ffmpeg": "ffmpeg", "deno": "Deno"}
+DENO_MIN = (2, 3)  # the oldest yt-dlp supports
 TIMEOUT_S = 30
+# Hide the console window a tool would otherwise open when the window (pythonw) runs it.
+NO_WINDOW = {"creationflags": 0x08000000} if os.name == "nt" else {}  # CREATE_NO_WINDOW
 USER_AGENT = "yt-slurp"
 
 
@@ -63,28 +66,56 @@ def exe_name(name: str) -> str:
 # Finding the tools
 # =============================================================================
 
+def child_env() -> dict:
+    """For starting another copy of the .exe, which must unpack itself afresh."""
+    return {**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"}
+
+
+_works: dict = {}  # (path, modified, size) -> bool
+
+
+def tool_works(path: Path) -> bool:
+    """True if the tool starts and, for Deno, is new enough for yt-dlp."""
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime, st.st_size)
+        if key not in _works:
+            deno = path.stem.lower() == "deno"
+            r = subprocess.run([str(path), "--version" if deno else "-version"], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=20, stdin=subprocess.DEVNULL, **NO_WINDOW)
+            ok = r.returncode == 0
+            if ok and deno:
+                m = re.search(r"deno (\d+)\.(\d+)", r.stdout)
+                ok = bool(m) and (int(m[1]), int(m[2])) >= DENO_MIN
+            _works[key] = ok
+        return _works[key]
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def find_tool(name: str) -> str | None:
-    """A tool from yt-slurp's own folder, the PATH, or a usual install place."""
+    """A tool that runs, from yt-slurp's own folder, the PATH, or a usual install place."""
     candidates = [tools_dir() / exe_name(name)]
     on_path = shutil.which(name)
     if on_path:
-        candidates.insert(1, Path(on_path))
+        candidates.append(Path(on_path))
     if os.name == "nt":
-        local = Path(os.environ.get("LOCALAPPDATA", ""))
+        winget = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet"
+        package = "DenoLand.Deno_*" if name == "deno" else "Gyan.FFmpeg*"
         candidates += [
             Path("C:/ffmpeg/bin") / exe_name(name),
             Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "ffmpeg" / "bin" / exe_name(name),
-            local / "Microsoft" / "WinGet" / "Links" / exe_name(name),
-            Path.home() / ".deno" / "bin" / exe_name(name),
+            winget / "Links" / exe_name(name),
+            # Installed by WinGet after this program's PATH was set
+            *sorted((winget / "Packages").glob(f"{package}/**/{exe_name(name)}")),
         ]
-    for c in candidates:
-        if c and c.is_file():
-            return str(c)
-    return None
+    candidates.append(Path.home() / ".deno" / "bin" / exe_name(name))
+    return next((str(c) for c in candidates if c.is_file() and tool_works(c)), None)
 
 
 def missing_tools() -> list[str]:
-    """Which of ffmpeg (with ffprobe) and Deno are missing. Takes milliseconds."""
+    """Which of ffmpeg (with ffprobe) and Deno are missing or do not run.
+    Starts each tool, so call it off the window's thread."""
     missing = []
     if not (find_tool("ffmpeg") and find_tool("ffprobe")):
         missing.append("ffmpeg")
@@ -105,6 +136,7 @@ def use_tools() -> None:
             if name == "deno":
                 os.environ["YT_SLURP_DENO"] = path
     current = os.environ.get("PATH", "")
+    dirs = [d for d in dirs if d not in current.split(os.pathsep)]
     os.environ["PATH"] = os.pathsep.join(dirs + [current]) if dirs else current
 
 
@@ -198,7 +230,14 @@ def install_tool(name: str, progress=None, step=None) -> None:
         say(f"Unpacking {label}")
         members = ["ffmpeg.exe", "ffprobe.exe"] if name == "ffmpeg" else ["deno.exe"]
         for m in members:
-            extract_member(zip_path, m, tools_dir() / m)
+            # Swapped in whole, so a failed unpack never damages a working copy
+            new = tools_dir() / (m + ".new")
+            extract_member(zip_path, m, new)
+            os.replace(new, tools_dir() / m)
+        for m in members:
+            if not tool_works(tools_dir() / m):
+                raise RuntimeError(f"{label} was downloaded but does not start. Security software may be "
+                                   f"blocking {tools_dir() / m}.")
 
 
 # =============================================================================
@@ -244,7 +283,7 @@ def apply_update(url: str, progress=None) -> Path:
 
 
 def restart(exe: Path) -> None:
-    subprocess.Popen([str(exe)], close_fds=True)
+    subprocess.Popen([str(exe)], close_fds=True, env=child_env())
 
 
 def tidy_after_update() -> None:

@@ -8,8 +8,10 @@ brings the app's saved .txt files back in. See README.md for the routine.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import datetime
+import hashlib
 import html
 import json
 import math
@@ -23,10 +25,13 @@ import threading
 import time
 import unicodedata
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-__version__ = "0.2.4"
+import yt_slurp_engine as engine
+import yt_slurp_setup as setup
+
+__version__ = "0.2.5"
 
 # =============================================================================
 # Constants
@@ -76,6 +81,8 @@ SHORTS_MAX_S = 180  # YouTube Shorts are at most 3 minutes
 # Network politeness and retries.
 PACES = {"normal": (2.0, 5.0), "slow": (5.0, 10.0), "very-slow": (10.0, 20.0)}
 DELAY_RANGE_S = PACES["normal"]  # set from --pace at the start of a run
+MAX_COMBINED_NAME_LEN = 60  # folder name for several channels or playlists
+SINGLE_VIDEOS = "Single videos"  # the folder for videos slurped by their own link
 ROUND_SIZE = 10  # videos per round; links and the WAV list are rewritten after each
 RETRY_DELAYS_S = (10, 20, 40, 80, 160)
 BOT_CHECK_LIMIT = 3  # consecutive "confirm you're not a bot" errors before pausing
@@ -217,6 +224,8 @@ def find_by_id(folder: Path, vid: str, suffix: str) -> list[Path]:
 # =============================================================================
 
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
+PERSONAL_LISTS = ("RD", "WL", "LL")
+VIDEO_IN_PLAYLIST = "video link with a playlist"
 VIDEO_PATHS = ("watch", "shorts", "live", "embed", "v")
 
 
@@ -225,15 +234,20 @@ def classify_url(url: str) -> tuple[str, str, str]:
     url = url.strip()
     if not re.match(r"https?://", url):
         url = "https://" + url
-    parsed = urllib.parse.urlparse(url)
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return "unknown", url, "not a web address"
     host = parsed.netloc.lower()
     query = urllib.parse.parse_qs(parsed.query)
     segs = [s for s in parsed.path.split("/") if s]
+    # youtu.be/ID, watch?v=ID, or /shorts/ID and the like
+    vid = (query.get("v") or [segs[-1] if segs else ""])[0]
 
     if host in ("youtu.be", "www.youtu.be"):
         if "list" in query:
-            return _playlist_from_list(query["list"][0], "video link with a playlist")
-        return "video", url, ""
+            return _video_or_list(vid, query["list"][0])
+        return _video(vid, url)
     if host not in YOUTUBE_HOSTS:
         return "unknown", url, "not a YouTube address"
     if not segs:
@@ -246,8 +260,8 @@ def classify_url(url: str) -> tuple[str, str, str]:
         return "unknown", url, "playlist address has no list= value"
     if first in VIDEO_PATHS:
         if "list" in query:
-            return _playlist_from_list(query["list"][0], "video link with a playlist")
-        return "video", url, ""
+            return _video_or_list(vid, query["list"][0])
+        return _video(vid, url)
     if first.startswith("@"):
         return "channel", f"https://www.youtube.com/{first}", ""
     if first in ("channel", "c", "user") and len(segs) >= 2:
@@ -258,8 +272,34 @@ def classify_url(url: str) -> tuple[str, str, str]:
     return "channel", f"https://www.youtube.com/{first}", ""
 
 
+def split_links(text: str) -> list[str]:
+    """The links in pasted text, however they are separated (or run together),
+    without bullets, other words or repeats. With no YouTube link, the words as they are."""
+    words = [w.strip("()[]<>{}'\"\u2018\u2019\u201c\u201d").rstrip(".:!)")
+             for w in re.split(r"[\s,;|]+|(?<=.)(?=https?://)", text)]
+    words = [w for w in words if w]
+    good = [w for w in words if classify_url(w)[0] != "unknown" or "youtu" in w.lower()]
+    out, seen = [], set()
+    for w in good or words:
+        key = classify_url(w)[1]
+        if key not in seen:
+            seen.add(key)
+            out.append(w)
+    return out
+
+
+def _video(vid: str, url: str) -> tuple[str, str, str]:
+    return ("video", watch_url(vid), "") if valid_id(vid) else ("unknown", url, "that video address is incomplete")
+
+
+def _video_or_list(vid: str, list_id: str) -> tuple[str, str, str]:
+    if list_id.startswith(PERSONAL_LISTS) and valid_id(vid):
+        return _video(vid, "")  # a mix made by YouTube, so the video is what was meant
+    return _playlist_from_list(list_id, VIDEO_IN_PLAYLIST)
+
+
 def _playlist_from_list(list_id: str, note: str) -> tuple[str, str, str]:
-    if list_id.startswith(("RD", "WL", "LL")):
+    if list_id.startswith(PERSONAL_LISTS):
         return "unknown", "", "that list is a YouTube mix or personal list, not a playlist"
     if note:
         note = f"{note}: using the playlist"
@@ -799,6 +839,19 @@ class ConsoleUI:
     def counts(self, folder: Path, counts: dict) -> None:
         pass
 
+    def confirm_many(self, groups: list[tuple[str, int]]) -> set[str] | None:
+        """Confirm a long run over (name, number of videos), longest first.
+        Returns the names to leave out, or None to cancel."""
+        for name, n in groups:
+            self.say(f"  {name}: {n:,}")
+        total = sum(n for _, n in groups)
+        go = self.choose(f"{long_run_text(total)} Carry on?", [("yes", f"Get all {total:,}"), ("none", "Cancel")])
+        return set() if go == "yes" else None
+
+    def problem(self, message: str, details: str) -> None:
+        """Something yt-slurp could not fix itself."""
+        self.say(f"\n{message}\n\nDetails:\n{details}")
+
     def item(self, kind: str, folder: Path, path: Path | None = None, text: str = "", title: str = "",
              vid: str = "") -> None:
         """A result has appeared (kind: transcript, wav, link, skipped). title is the
@@ -957,6 +1010,14 @@ class Stop(Exception):
     """Ends the run with a message and exit code 2, after saving state."""
 
 
+class NeedsHelp(Stop):
+    """A problem yt-slurp could not fix itself, with technical details to copy."""
+
+    def __init__(self, message: str, details: str = ""):
+        super().__init__(message)
+        self.details = details
+
+
 def setup_console() -> None:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -968,24 +1029,42 @@ def setup_console() -> None:
 def preflight() -> None:
     if sys.version_info < (3, 10):
         raise Stop("yt-slurp needs Python 3.10 or later.")
-    missing = [t for t in ("ffmpeg", "ffprobe") if not shutil.which(t)]
-    if missing:
-        raise Stop(
-            f"{' and '.join(missing)} not found on the PATH.\n"
-            "Install it with:\n\n    winget install Gyan.FFmpeg\n\n"
-            "then open a new terminal (the PATH only updates in new windows) and run yt-slurp again.")
+    ensure_tools()
     try:
-        from yt_dlp.version import __version__
+        version = engine.prepare(say, tool_progress("Updating yt-dlp"))
     except ImportError:
-        raise Stop('yt-dlp is not installed. In the virtual environment run:  pip install -e .')
-    say(f"yt-dlp {__version__}")
+        raise Stop(hint("yt-dlp is not installed. In the virtual environment run:  pip install -e .",
+                        "yt-dlp could not be loaded. Download yt-slurp again from " + setup.RELEASES_PAGE))
+    say(f"yt-dlp {version}")
 
 
-JS_RUNTIME_HELP = (
-    "yt-dlp needs a JavaScript runtime to read YouTube. Install Deno with:\n\n"
-    "    winget install DenoLand.Deno\n\n"
-    "then open a new terminal and run yt-slurp again (your progress is saved).\n"
-    'If Deno is already installed, update yt-dlp:  pip install -U "yt-dlp[default]"')
+def tool_progress(label: str):
+    """A download progress callback, shown as whole megabytes."""
+    return lambda done, total: UI.progress(f"{label} (MB)", done // 1_000_000, total // 1_000_000)
+
+
+def install_tools(names: list[str]) -> None:
+    """Download tools into yt-slurp's own folder, so nobody has to use a terminal."""
+    for name in names:
+        label = setup.TOOL_NAMES[name]
+        if os.name != "nt":
+            raise Stop(f"{label} is missing or does not run. Install it with your package manager, "
+                       "then run yt-slurp again.")
+        say(f"{label} is missing or does not run. Downloading yt-slurp's own copy...")
+        try:
+            setup.install_tool(name, tool_progress(f"Downloading {label}"))
+        except Exception as e:
+            raise NeedsHelp(f"yt-slurp could not set up {label}. Check your internet connection, then try again.",
+                            str(e))
+    setup.use_tools()
+
+
+def ensure_tools() -> None:
+    setup.use_tools()
+    missing = setup.missing_tools()
+    if missing:
+        install_tools(missing)
+
 
 COOKIE_HELP = (
     "Chrome, Edge and Brave lock their cookie file while open and encrypt it in a way "
@@ -996,15 +1075,6 @@ COOKIE_HELP = (
 # =============================================================================
 # Network (yt-dlp)
 # =============================================================================
-
-def find_deno() -> str | None:
-    """Deno's path: the launcher's YT_SLURP_DENO, the PATH, or Deno's own install folder."""
-    for cand in (os.environ.get("YT_SLURP_DENO"), shutil.which("deno"),
-                 str(Path.home() / ".deno" / "bin" / ("deno.exe" if os.name == "nt" else "deno"))):
-        if cand and os.path.isfile(cand):
-            return cand
-    return None
-
 
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
@@ -1064,9 +1134,14 @@ class FolderLock:
 
 
 class YdlLogger:
+    """Keeps what yt-dlp reports during one request, for diagnosis."""
+
     def __init__(self):
-        self.js_missing = False
-        self.last_error = ""
+        self.reset()
+
+    def reset(self):
+        self.messages: list[str] = []
+        self.js_failed = False
 
     def debug(self, msg):
         pass
@@ -1075,13 +1150,12 @@ class YdlLogger:
         pass
 
     def warning(self, msg):
+        msg = re.sub(r"\x1b\[[0-9;]*m", "", str(msg))
+        self.messages.append(msg)
         if classify_error(msg) == "js-runtime":
-            self.js_missing = True
+            self.js_failed = True
 
-    def error(self, msg):
-        self.last_error = msg
-        if classify_error(msg) == "js-runtime":
-            self.js_missing = True
+    error = warning
 
 
 class Net:
@@ -1092,6 +1166,8 @@ class Net:
         self.logger = YdlLogger()
         self._ydls: dict = {}
         self._last_request = 0.0
+        self._repaired = self._warned = False
+        self.update_problem = ""
 
     def _ydl(self, key: str, **extra):
         from yt_dlp import YoutubeDL
@@ -1104,7 +1180,7 @@ class Net:
             }
             if self.browser:
                 params["cookiesfrombrowser"] = (self.browser,)
-            deno = find_deno()
+            deno = setup.find_tool("deno")
             if deno:
                 params["js_runtimes"] = {"deno": {"path": deno}}
             params.update(extra)
@@ -1138,14 +1214,31 @@ class Net:
         self._last_request = time.monotonic()
 
     def call(self, what: str, fn):
+        result, failed = self._call(what, fn)
+        if failed and self._repair():
+            result, failed = self._call(what, fn)
+        if failed and result is None:
+            raise self.js_help()
+        if failed and not self._warned:
+            self._warned = True
+            say("    YouTube has changed something yt-dlp does not fully handle yet. "
+                "Carrying on with what it could read.")
+        return result
+
+    def _call(self, what: str, fn):
+        """(result, whether YouTube's JavaScript challenge failed)."""
         for attempt in range(len(RETRY_DELAYS_S) + 1):
             self._pause()
+            self.logger.reset()
             try:
                 result = fn()
+                return result, self.logger.js_failed
             except Exception as e:
-                if self.logger.js_missing or classify_error(str(e)) == "js-runtime":
-                    raise Stop(JS_RUNTIME_HELP)
                 kind = classify_error(str(e))
+                # A failed challenge leaves no formats, which yt-dlp reports as an error of its own
+                if kind == "js-runtime" or (self.logger.js_failed and kind == "other"):
+                    self.logger.messages.append(str(e))
+                    return None, True
                 if kind == "cookies":
                     raise CookieError(short_error(e)) from None
                 if kind == "transient" and attempt < len(RETRY_DELAYS_S):
@@ -1156,16 +1249,61 @@ class Net:
                 raise
             finally:
                 self._last_request = time.monotonic()
-            if self.logger.js_missing:
-                raise Stop(JS_RUNTIME_HELP)
-            return result
+
+    def _repair(self) -> bool:
+        """Put right what stops yt-dlp reading YouTube, once per run. True if
+        anything changed, so the request is worth repeating."""
+        if self._repaired:
+            return False
+        self._repaired = True
+        say("    yt-dlp could not read YouTube. Trying to fix it...")
+        changed = False
+        if not setup.find_tool("deno"):
+            install_tools(["deno"])
+            changed = True
+        try:
+            from yt_dlp.version import __version__ as current
+            version = engine.repair(current, say, tool_progress("Updating yt-dlp"))
+        except Exception as e:
+            version = None
+            self.update_problem = str(e)
+        if version:
+            say(f"    Now using yt-dlp {version}.")
+            changed = True
+        if changed:
+            self.close()  # the open downloaders belong to the old version
+        return changed
+
+    def js_help(self) -> NeedsHelp:
+        from yt_dlp.version import __version__ as ytdlp
+        details = "\n".join([f"yt-slurp {__version__}, yt-dlp {ytdlp}",
+                             f"Deno: {setup.find_tool('deno')}", *self.logger.messages[-6:]])
+        if self.update_problem:
+            return NeedsHelp("YouTube has changed, and yt-slurp could not update yt-dlp to match. Check your "
+                             "internet connection, then try again. Your progress is saved.",
+                             f"Update problem: {self.update_problem}\n{details}")
+        return NeedsHelp("yt-dlp cannot read YouTube at the moment, and there is no newer version yet. Fixes usually "
+                         "come within a few days, and yt-slurp installs them by itself. Try again later. "
+                         "Your progress is saved.", details)
 
     def flat(self, url: str) -> dict:
         return self.call("listing", lambda: self._ydl("flat", extract_flat="in_playlist")
                          .extract_info(url, download=False))
 
     def video_info(self, vid: str) -> dict:
-        return self.call("metadata", lambda: self._info().extract_info(watch_url(vid), download=False))
+        try:
+            return self.call("metadata", lambda: self._info().extract_info(watch_url(vid), download=False))
+        except NeedsHelp as problem:
+            # Captions can still be there when the audio and video cannot be read
+            try:
+                info, _ = self._call("captions", lambda: self._ydl("captions", ignore_no_formats_error=True)
+                                     .extract_info(watch_url(vid), download=False))
+            except Exception:
+                info = None
+            if not info:
+                raise problem
+            info["js_problem"] = problem
+            return info
 
     def fetch_text(self, url: str) -> str:
         def get():
@@ -1194,8 +1332,7 @@ class CookieError(Exception):
 # Audio (ffmpeg)
 # =============================================================================
 
-# Hide the console window ffmpeg would otherwise open when the GUI (pythonw) runs it.
-NO_WINDOW = {"creationflags": 0x08000000} if os.name == "nt" else {}  # CREATE_NO_WINDOW
+NO_WINDOW = setup.NO_WINDOW
 
 
 def run_ffmpeg(args: list[str]) -> subprocess.CompletedProcess:
@@ -1254,14 +1391,15 @@ def cut_wav(src: Path, dest: Path, start: float, end: float) -> None:
 @dataclass
 class Source:
     url: str
-    kind: str                 # channel or playlist
+    kind: str                 # channel, playlist, video (one channel's single videos) or combined
     name: str = ""
     source_id: str = ""
     folder: Path | None = None
     tabs: dict | None = None  # type to list of flat entries (channels)
-    entries: list | None = None  # playlists
+    entries: list | None = None  # playlists, single videos and combined
     mode: str = "new"         # new, update or fresh
     types: list | None = None
+    wanted: set = field(default_factory=set)  # videos asked for by their own link
     failed: str = ""
 
 
@@ -1293,26 +1431,157 @@ def probe_source(src: Source, net: Net) -> None:
         src.name = src.url.rstrip("/").rsplit("/", 1)[-1].lstrip("@")
 
 
-def choose_folder(src: Source, output: Path, taken: set) -> Path:
-    base = safe_filename(src.name, MAX_FOLDER_NAME_LEN)
-    folder = output / base
-    run_file = folder / "run.json"
-    clash = str(folder).lower() in taken
-    if not clash and run_file.exists():
+def resolve_videos(ids: list[str], net: Net, whole_channel: bool = False) -> list[Source]:
+    """One source per channel for videos given by their own links, or the
+    channels themselves. A video that cannot be read yet goes in a folder of its own kind."""
+    found: dict[str, Source] = {}
+    for vid in ids:
+        check_stop()
+        info, name, cid, url = None, SINGLE_VIDEOS, "", ""
         try:
-            clash = json.loads(read_text(run_file)).get("url") != src.url
-        except (ValueError, OSError):
-            clash = False
-    if clash:
-        folder = output / safe_filename(f"{base} {src.source_id or 'source'}", MAX_FOLDER_NAME_LEN + 30)
-    taken.add(str(folder).lower())
-    return folder
+            info = net.video_info(vid)
+            cid = info.get("channel_id") or info.get("uploader_id") or ""
+            name = info.get("channel") or info.get("uploader") or SINGLE_VIDEOS
+            url = info.get("uploader_url") or info.get("channel_url") or ""
+        except (Stop, CookieError):
+            raise
+        except Exception as e:
+            say(f"  {watch_url(vid)}: {short_error(e, 160)}")
+        if whole_channel:
+            if not url:
+                raise Stop("yt-slurp could not find that video's channel. Paste the channel's own link instead.")
+            found.setdefault(cid or url, Source(url=classify_url(url)[1], kind="channel"))
+            continue
+        src = found.setdefault(cid or name, Source(url=url, kind="video", name=name, source_id=cid, entries=[]))
+        src.entries.append({"id": vid, "title": (info or {}).get("title"), "info": info})
+        src.wanted.add(vid)
+    return list(found.values())
 
 
-def decide_mode(src: Source, args) -> None:
+def same_source(src: Source, run: dict) -> bool:
+    """True if a folder's run.json belongs to this channel or playlist."""
+    return (str(run.get("url") or "").lower() == src.url.lower()
+            or bool(src.source_id) and run.get("source_id") == src.source_id)
+
+
+def several_places(sources: list[Source]) -> bool:
+    """True if the links cover more than one channel or playlist. Failed ones
+    count, so a passing problem does not change where the rest go."""
+    return len({(s.source_id if s.kind != "playlist" else "") or s.url or s.name for s in sources}) > 1
+
+
+def warn_if_many(sources: list[Source], ctx: RunContext) -> list[Source]:
+    """Ask before a long run, offering to leave channels out. Returns what is
+    left. Counts what is known from the listing, so videos found to be short
+    later may bring it down."""
+    counts: dict[str, int] = {}
+    for s in sources:
+        for e in SourceRun(s, ctx).todo_entries():
+            name = e.get("_from") or s.name
+            counts[name] = counts.get(name, 0) + 1
+    total = sum(counts.values())
+    if not ctx.args.warn_over or total <= ctx.args.warn_over:
+        return sources
+    groups = sorted(counts.items(), key=lambda c: (-c[1], c[0].lower()))
+    left_out = UI.confirm_many(groups)
+    if left_out is None or len(left_out) >= len(groups):
+        raise Stop("Cancelled. Nothing was downloaded.")
+    for name in left_out:
+        say(f"Left out: {name} ({counts[name]} videos)")
+    kept = []
+    for s in sources:
+        if s.kind == "combined":
+            s.entries = [e for e in s.entries if e.get("_from") not in left_out]
+            kept.append(s)
+        elif s.name not in left_out:
+            kept.append(s)
+    return kept
+
+
+def long_run_text(total: int) -> str:
+    hours = total * 2 * sum(DELAY_RANGE_S) / 2 / 3600  # details and captions, a pause before each
+    took = f"about {hours:.0f} hours" if hours >= 1.5 else "about an hour" if hours >= 0.75 else "under an hour"
+    return f"There are {total:,} videos to get. At this pace that takes {took} or more."
+
+
+def combine(sources: list[Source], urls: list[str]) -> Source:
+    """All sources as one, with each video once. The set of links, in any
+    order, identifies it, so the same links always share a folder."""
+    entries: dict[str, dict] = {}
+    wanted: set = set()
+    for s in sources:
+        wanted |= s.wanted
+        for e, vtype in source_listing(s):
+            entries.setdefault(e["id"], {**e, "_type": vtype, "_from": s.name})
+            if e.get("info"):
+                entries[e["id"]]["info"] = e["info"]
+    key = "\n".join(sorted(urls))
+    types = [t for t in TYPES if any(t in (s.types or []) for s in sources)]
+    return Source(url=key, kind="combined", name=combined_name([s.name for s in sources]),
+                  entries=list(entries.values()), wanted=wanted, types=types,
+                  source_id=hashlib.sha1(key.encode()).hexdigest()[:8])
+
+
+def combined_name(names: list[str]) -> str:
+    """As many names as fit, then "and more". Alphabetical, so the order of the
+    links makes no difference."""
+    names = sorted(set(names), key=str.lower)
+    if len(names) == 1:
+        return names[0]
+    full = f"{', '.join(names[:-1])} and {names[-1]}"
+    if len(full) <= MAX_COMBINED_NAME_LEN:
+        return full
+    more = " and more"
+    room = MAX_COMBINED_NAME_LEN - len(more)
+    kept = [n for i, n in enumerate(names) if len(", ".join(names[:i + 1])) <= room]
+    return (", ".join(kept) or names[0][:room].rstrip()) + more
+
+
+def folder_for_links(output: Path, key: str) -> Path | None:
+    """The folder an earlier slurp of the same links made, even if since renamed."""
+    if output.is_dir():
+        for d in sorted(output.iterdir()):
+            if d.is_dir() and load_run(d).get("url") == key:
+                return d
+    return None
+
+
+def source_listing(src: Source) -> list[tuple[dict, str]]:
+    if src.kind != "channel":
+        return [(e, e.get("_type", "video")) for e in src.entries]
+    out, seen = [], set()
+    for tab in src.types or []:
+        for e in src.tabs.get(tab, []):
+            if e["id"] not in seen:
+                seen.add(e["id"])
+                out.append((e, TYPE_LABEL[tab]))
+    return out
+
+
+def choose_folder(src: Source, output: Path, taken: set) -> Path:
+    """A folder for this source that no other source uses."""
+    base = safe_filename(src.name, MAX_FOLDER_NAME_LEN)
+    ident = src.source_id or hashlib.sha1(src.url.encode()).hexdigest()[:8]
+    short = f"{safe_filename(src.name, MAX_FOLDER_NAME_LEN - 20)} {safe_filename(ident, 40)}"
+    names = [base, safe_filename(f"{base} {ident}", MAX_FOLDER_NAME_LEN + 30), short]
+    names += [f"{short} {n}" for n in range(2, 1000)]
+    for name in names:
+        folder = output / name
+        run = load_run(folder)
+        if str(folder).lower() not in taken and (not run or same_source(src, run)):
+            taken.add(str(folder).lower())
+            return folder
+    raise Stop(f"Could not choose a folder for {src.name}. Change the results folder and try again.")
+
+
+def decide_mode(src: Source, args, missing: list[str] | None = None) -> None:
+    """missing: sources that could not be read, whose results starting again could not replace."""
     folder = src.folder
     if not (folder / "manifest.csv").exists():
         src.mode = "new"
+        return
+    if src.kind == "video" or load_run(folder).get("started_by") == "video" and not args.fresh:
+        src.mode = "update"  # nothing to ask: earlier videos are kept
         return
     if args.update:
         src.mode = "update"
@@ -1321,24 +1590,38 @@ def decide_mode(src: Source, args) -> None:
     else:
         rows = len(Manifest(folder / "manifest.csv").rows)
         src.mode = UI.choose(
-            f"{src.name} has been slurped before ({rows} videos). What would you like to do?",
+            (f"These links have been slurped together before, in the folder {folder.name} ({rows} videos)."
+             if src.kind == "combined" else f"{src.name} has been slurped before ({rows} videos).")
+            + " What would you like to do?",
             [("update", "Get new videos and retry any that failed"),
              ("fresh", "Start again from scratch")])
     if src.mode == "fresh":
+        if missing:
+            raise Stop(f"Nothing deleted. Starting again would lose the results for {', '.join(missing)}, which could "
+                       "not be read just now. Try again later, or get new videos instead.")
         confirm_fresh(folder)
 
 
 def confirm_fresh(folder: Path) -> None:
-    doomed = [p for p in folder.iterdir() if p.name != DIR_WHISPER]
-    nfiles = sum(1 for p in doomed for _ in ([p] if p.is_file() else p.rglob("*")))
-    if not UI.confirm_delete(f"Starting again deletes {nfiles} files in {folder}. "
-                             f"Your saved Whisper text in {DIR_WHISPER} is kept."):
+    """Only asks. clear_folder deletes, once every other question is answered."""
+    nfiles = sum(1 for p in fresh_doomed(folder) for _ in ([p] if p.is_file() else p.rglob("*")))
+    if not UI.confirm_delete(f"Starting again deletes {nfiles} files in {folder}, including any videos you added by "
+                             f"their own links. Your saved Whisper text in {DIR_WHISPER} is kept."):
         raise Stop("Nothing deleted. Run again and choose to get new videos instead.")
+
+
+def fresh_doomed(folder: Path) -> list[Path]:
+    return [p for p in folder.iterdir() if p.name != DIR_WHISPER]
+
+
+def clear_folder(folder: Path) -> None:
+    with FolderLock(folder):
+        doomed = fresh_doomed(folder)
     for p in doomed:
         if p.is_dir():
             shutil.rmtree(p)
         else:
-            p.unlink()
+            p.unlink(missing_ok=True)
 
 
 def choose_types(sources: list[Source], args) -> None:
@@ -1379,10 +1662,14 @@ def parse_types(value: str) -> list[str]:
 
 
 def load_run(folder: Path) -> dict:
+    """A folder's run.json, or {} if it is missing or damaged."""
     try:
-        return json.loads(read_text(folder / "run.json"))
-    except (OSError, ValueError):
+        run = json.loads(read_text(folder / "run.json"))
+    except (OSError, ValueError, RecursionError):
         return {}
+    if not isinstance(run, dict):
+        return {}
+    return {k: v for k, v in run.items() if k not in ("url", "name", "source_id") or isinstance(v, str)}
 
 
 META_KEYS = ("id", "title", "channel", "uploader", "upload_date", "release_date", "duration",
@@ -1416,11 +1703,20 @@ class RunContext:
         self.signin_asked = False
 
 
+def video_args(args):
+    """Videos asked for by their own links always get transcripts, and have no
+    need of a list of links."""
+    args = copy.copy(args)
+    args.no_links, args.no_transcripts, args.links_only = True, False, False
+    return args
+
+
 class SourceRun:
     def __init__(self, src: Source, ctx: RunContext):
         self.src = src
         self.ctx = ctx
-        self.args = ctx.args
+        only_videos = src.entries and all(e["id"] in src.wanted for e in src.entries)
+        self.args = video_args(ctx.args) if only_videos else ctx.args
         self.folder = src.folder
         self.manifest = Manifest(self.folder / "manifest.csv")
         self.meta_dir = self.folder / DIR_WORK / "meta"
@@ -1448,22 +1744,33 @@ class SourceRun:
         meta = self.load_meta(vid, max_age)
         if meta is None:
             info = self.ctx.net.video_info(vid)
-            meta = trim_meta(info, self.args.lang)
-            write_atomic(self.meta_path(vid), json.dumps(meta))
+            meta = self.keep_meta(vid, info)
+        return meta
+
+    def keep_meta(self, vid, info) -> dict:
+        meta = trim_meta(info, self.args.lang)
+        if info.get("js_problem"):
+            if not (meta["subtitles"] or meta["automatic_captions"]):
+                raise info["js_problem"]
+            say("    Only the captions could be read for this video.")
+        write_atomic(self.meta_path(vid), json.dumps(meta))
         return meta
 
     # ----- listing -----
 
     def listing(self) -> list[tuple[dict, str]]:
-        if self.src.kind == "playlist":
-            return [(e, "video") for e in self.src.entries]
-        out, seen = [], set()
-        for tab in self.src.types or []:
-            for e in self.src.tabs.get(tab, []):
-                if e["id"] not in seen:
-                    seen.add(e["id"])
-                    out.append((e, TYPE_LABEL[tab]))
-        return out
+        return source_listing(self.src)
+
+    def todo_entries(self) -> list[dict]:
+        """About which videos select() will choose, without recording anything."""
+        a, todo = self.args, []
+        for e, vtype in self.listing():
+            row = None if self.src.mode == "fresh" else self.manifest.get(e["id"])
+            dur = e.get("duration") or (row or {}).get("duration")
+            short = float(dur) < a.min_minutes * 60 if dur else vtype == "short" and a.min_minutes * 60 > SHORTS_MAX_S
+            if e["id"] in self.src.wanted or not short and (not row or self.needs_work(row)):
+                todo.append(e)
+        return todo[:max(a.limit, len(self.src.wanted))] if a.limit else todo
 
     def select(self) -> list[str]:
         """Record listing rows and return the IDs to process, in listing order."""
@@ -1483,17 +1790,23 @@ class SourceRun:
             if title in ("[Private video]", "[Deleted video]"):
                 self.skip(vid, "skipped-private", "private or deleted", title=title, type=vtype)
                 continue
+            wanted = vid in self.src.wanted
             known_short = dur is not None and float(dur) < min_s
             if dur is None and vtype == "short" and min_s > SHORTS_MAX_S:
                 known_short = True  # every Short is under the limit; no need to fetch it
-            if known_short:
+            if known_short and not wanted:
                 if not row or row["status"] in ("", "pending", "skipped-short"):
                     self.skip(vid, "skipped-short", title=title, type=vtype,
                               duration=int(float(dur)) if dur else "")
                 short_n += 1
                 short_by_type[vtype] = short_by_type.get(vtype, 0) + 1
                 continue
+            if row and wanted and (
+                    row["status"].startswith("skipped") or row["status"] in ("deleted", "needs-signin")):
+                self.manifest.set(vid, status="pending")  # asked for by name, so try again
             if row and update and not self.needs_work(row):
+                if wanted:
+                    say(f"  Already done: {title}")
                 continue
             if row and not update:
                 continue  # already handled earlier in this run
@@ -1511,7 +1824,8 @@ class SourceRun:
                 say("  Every Short is under the minimum length. Use --min-minutes 0 to include them.")
         if a.limit and len(todo) > a.limit:
             say(f"  --limit {a.limit}: processing {a.limit} of {len(todo)}.")
-            todo = todo[:a.limit]
+            todo = [v for v in todo if v in self.src.wanted] + [v for v in todo if v not in self.src.wanted]
+            todo = todo[:max(a.limit, len(self.src.wanted))]
         return todo
 
     def needs_work(self, row: dict) -> bool:
@@ -1588,7 +1902,7 @@ class SourceRun:
                 language=meta.get("language") or "", error="")
             if meta.get("live_status") in ("is_live", "is_upcoming", "post_live"):
                 self.skip(vid, "skipped-live", error=meta.get("live_status"))
-            elif meta.get("duration") and meta["duration"] < min_s:
+            elif vid not in self.src.wanted and meta.get("duration") and meta["duration"] < min_s:
                 self.skip(vid, "skipped-short")
             else:
                 if self.manifest.get(vid)["status"] != "pending":
@@ -1730,10 +2044,13 @@ class SourceRun:
                 shutil.rmtree(self.tmp_dir, ignore_errors=True)
             save_run(self.src, a)
             migrate_names(self.folder)
+            for e in self.src.entries or []:
+                if info := e.pop("info", None):  # read while finding its channel, so keep it
+                    self.keep_meta(e["id"], info)
             try:
                 todo = only if only is not None else self.select()
                 self.save()
-                say(f"  {len(todo)} videos to process.")
+                say(f"  {len(todo)} video{'' if len(todo) == 1 else 's'} to process.")
                 for start in range(0, len(todo), ROUND_SIZE):
                     chunk = todo[start:start + ROUND_SIZE]
                     ready = self.metadata_pass(chunk, start, len(todo))
@@ -1759,8 +2076,15 @@ class SourceRun:
 
 def save_run(src: Source, args) -> None:
     run = load_run(src.folder)
+    if src.kind == "video":
+        if run:
+            return  # the channel's own settings stay
+        run["started_by"] = "video"
+    else:
+        run.pop("started_by", None)
     run.update({
-        "url": src.url, "kind": src.kind, "name": src.name, "types": src.types,
+        "source_id": src.source_id,
+        "url": src.url, "kind": "channel" if src.kind == "video" and src.url else src.kind, "name": src.name, "types": src.types,
         "lang": args.lang, "min_minutes": args.min_minutes, "chunk_minutes": args.chunk_minutes,
         "wav_rate": args.wav_rate, "updated": now_stamp(),
     })
@@ -2103,7 +2427,8 @@ def switch_to_cookies(ctx: RunContext, browser: str) -> bool:
 
 
 def signin_retry(runs: list[SourceRun], ctx: RunContext) -> None:
-    pending = {r: [v for v, row in r.manifest.rows.items() if row["status"] == "needs-signin"] for r in runs}
+    pending = {r: [v for v, row in r.manifest.rows.items() if row["status"] == "needs-signin"
+                   and (r.src.kind != "video" or any(e["id"] == v for e in r.src.entries))] for r in runs}
     total = sum(len(v) for v in pending.values())
     if not total:
         return
@@ -2175,7 +2500,7 @@ def build_run_parser() -> argparse.ArgumentParser:
         prog="yt-slurp",
         description="Collect YouTube transcripts for a channel or playlist. "
                     "Other commands: 'yt-slurp merge <folder>' and 'yt-slurp smoke-wav [folder]'.")
-    p.add_argument("url", nargs="?", help="channel or playlist URL")
+    p.add_argument("url", nargs="*", help="channel, playlist or video URLs")
     p.add_argument("--file", help="text file of URLs, one per line (# comments allowed)")
     p.add_argument("--output", default=DEFAULT_OUTPUT, help=f"parent output folder (default {DEFAULT_OUTPUT})")
     p.add_argument("--types", help="videos, shorts, streams (comma-separated) or all")
@@ -2194,6 +2519,11 @@ def build_run_parser() -> argparse.ArgumentParser:
                    help="split audio longer than this; 0 disables (default 60)")
     p.add_argument("--no-transcripts", action="store_true", help="don't make transcripts from captions")
     p.add_argument("--no-wavs", action="store_true", help="don't make WAVs for videos without captions")
+    p.add_argument("--warn-over", type=int, default=0, metavar="N",
+                   help="ask before doing more than N videos (0, the default, never asks)")
+    p.add_argument("--whole-channel", action="store_true", help="with a video URL: do the video's whole channel")
+    p.add_argument("--separate", action="store_true",
+                   help="with several URLs: a folder for each channel or playlist (always so with --file)")
     p.add_argument("--no-links", action="store_true", help="don't write links.txt")
     p.add_argument("--pace", choices=list(PACES), default="normal",
                    help="wait between requests: normal 2-5 s, slow 5-10 s, very-slow 10-20 s")
@@ -2226,78 +2556,140 @@ def normalise_make_options(args) -> None:
 
 
 def cmd_run(argv: list[str]) -> None:
-    args = build_run_parser().parse_args(argv)
+    args = build_run_parser().parse_intermixed_args(argv)
     normalise_make_options(args)
     global DELAY_RANGE_S
     DELAY_RANGE_S = PACES[args.pace]
     if bool(args.url) == bool(args.file):
-        raise Stop("Give one channel or playlist URL, or --file urls.txt.")
+        raise Stop("Give channel, playlist or video URLs, or --file urls.txt.")
     preflight()
-    urls = read_url_file(args.file) if args.file else [args.url]
+    urls = split_links("\n".join(read_url_file(args.file) if args.file else args.url))
 
-    sources = []
+    sources: list[Source] = []
+    videos: list[str] = []
     for url in urls:
         kind, norm, note = classify_url(url)
         if kind == "video":
-            say(f"Skipping {url}: that is a single video. Give a channel or playlist URL.")
+            vid = norm.rsplit("=", 1)[-1]
+            if vid not in videos:
+                videos.append(vid)
         elif kind == "unknown":
             say(f"Skipping {url}: {note}.")
         else:
             if note:
                 say(f"{url}: {note}.")
-            sources.append(Source(url=norm, kind=kind))
-    if not sources:
-        raise Stop("No channel or playlist URLs to process.")
+            if not any(s.url == norm for s in sources):
+                sources.append(Source(url=norm, kind=kind))
+    if not sources and not videos:
+        raise Stop("No YouTube links to process.")
 
+    links = [s.url for s in sources] + [watch_url(v) for v in videos]
     output = Path(args.output)
     net = Net()
     ctx = RunContext(args, net)
     taken: set = set()
-    say("Listing videos...")
-    for src in sources:
-        try:
-            probe_source(src, ctx.net)
-        except Stop:
-            raise
-        except Exception as e:
-            src.failed = short_error(e)
-            say(f"  Could not list {src.url}: {src.failed}")
-            continue
-        if not (src.entries or src.tabs):
-            src.failed = "no videos found (check the address)"
-            say(f"  {src.url}: {src.failed}")
-            continue
-        src.folder = choose_folder(src, output, taken)
-        count = (len(src.entries) if src.kind == "playlist"
-                 else ", ".join(f"{t} {len(v)}" for t, v in src.tabs.items()))
-        say(f"  {src.name}: {count}")
-        decide_mode(src, args)
-    live = [s for s in sources if not s.failed]
-    choose_types(live, args)
+    try:
+        say("Listing videos...")
+        if videos and args.whole_channel:
+            sources += resolve_videos(videos, ctx.net, whole_channel=True)
+            videos = []
+        for src in sources:
+            try:
+                probe_source(src, ctx.net)
+            except Stop:
+                raise
+            except Exception as e:
+                src.failed = short_error(e)
+                say(f"  Could not list {src.url}: {src.failed}")
+                continue
+            if not (src.entries or src.tabs):
+                src.failed = "no videos found (check the address)"
+                say(f"  {src.url}: {src.failed}")
+                continue
+            count = (len(src.entries) if src.entries
+                     else ", ".join(f"{t} {len(v)}" for t, v in src.tabs.items()))
+            say(f"  {src.name}: {count}")
+        sources += resolve_videos(videos, ctx.net)  # after the channels, which then do them if they can
+        live = []
+        for src in sources:
+            # Two addresses for one channel count once
+            if not src.failed and not any(s.kind == src.kind == "channel" and s.source_id and
+                                          s.source_id == src.source_id for s in live):
+                live.append(src)
+        together = bool(live) and several_places(sources) and not (args.file or args.separate)
+        if together:
+            key = "\n".join(sorted(links))
+            earlier = folder_for_links(output, key)
+            mode = "new"
+            if earlier:
+                stored = load_run(earlier).get("types")
+                before = Source(url=key, kind="combined", folder=earlier)
+                decide_mode(before, args, [s.url or s.name for s in sources
+                                           if s.failed or s.kind == "video" and not s.source_id])
+                mode = before.mode
+                if mode == "update" and stored and not args.types:
+                    args.types = ",".join(stored)  # the same kinds of video as last time
+            choose_types(live, args)
+            live = [combine(live, links)]
+            live[0].folder, live[0].mode = earlier, mode
+            sources = [s for s in sources if s.failed] + live
+        for src in live:
+            # A channel's single videos share its folder, so nothing is done twice
+            owner = next((s for s in live if s.kind == "channel" and src.kind == "video" and s.folder
+                          and s.source_id and s.source_id == src.source_id), None)
+            src.folder = owner.folder if owner else src.folder or choose_folder(src, output, taken)
+            if src.kind == "combined" and earlier:
+                continue  # already decided
+            try:
+                decide_mode(src, args)
+            except Stop as e:
+                if len(live) == 1:
+                    raise
+                src.failed = str(e)  # the other links still go ahead
+                say(f"  {e}")
+            if owner:
+                src.mode = "update"
+        live = [s for s in live if not s.failed]
+        if not together:
+            choose_types(live, args)
 
-    runs = []
-    for src in live:
-        if ctx.stop_all:
-            break
-        say(f"\n== {src.name} ({src.folder}) ==")
-        run = SourceRun(src, ctx)
-        runs.append(run)
-        run.run()
-    if not args.links_only and not ctx.stop_all:
-        signin_retry(runs, ctx)
-    ctx.net.close()
+        live = warn_if_many(live, ctx)
+        runs = []
+        for src in live:
+            if ctx.stop_all:
+                break
+            say(f"\n== {src.name} ({src.folder}) ==")
+            try:
+                if src.mode == "fresh":
+                    clear_folder(src.folder)
+                    src.mode = "new"
+                run = SourceRun(src, ctx)
+                runs.append(run)
+                run.run()
+            except NeedsHelp:
+                raise
+            except Stop as e:
+                if len(live) == 1:
+                    raise
+                runs[:] = [r for r in runs if r.src is not src]  # the other links still go ahead
+                src.failed = str(e)
+                say(f"  {e}")
+        if not ctx.stop_all:
+            signin_retry([r for r in runs if not r.args.links_only], ctx)
+    finally:
+        ctx.net.close()
 
     say("\nSummary")
     for run in runs:
         summarise(run)
-        if args.links_only:
+        if run.args.links_only:
             say(f"  Links: {run.folder.resolve() / 'links.txt'}")
         elif (run.folder / DIR_TRANSCRIPTS).is_dir():
             say(hint(f"  For Gemini Notebook, run: yt-slurp gemini \"{run.folder.resolve()}\"",
                      "  For Gemini Notebook, click Make Gemini Notebook files."))
     for src in sources:
         if src.failed:
-            say(f"\nNot listed: {src.url} ({src.failed})")
+            say(f"\nNot done: {src.url or src.name} ({src.failed})")
 
 
 def cmd_merge(argv: list[str]) -> None:
@@ -2363,6 +2755,9 @@ def run_command(argv: list[str]) -> int:
         say(hint("\nStopped. Progress is saved; run again with --update to continue.",
                  "\nStopped. Progress is saved; Slurp the same link again to carry on."))
         return 130
+    except NeedsHelp as e:
+        UI.problem(str(e), e.details)
+        return 2
     except Stop as e:
         say(f"\n{e}")
         return 2

@@ -39,8 +39,17 @@ jobs:
           --icon icon.ico
           --add-data "icon.png;." --add-data "icon.ico;."
           --collect-all yt_dlp_ejs
-          --hidden-import yt_slurp_gui --hidden-import yt_slurp_setup
+          --copy-metadata yt-dlp
+          --additional-hooks-dir hooks
+          --hidden-import yt_slurp_gui --hidden-import yt_slurp_setup --hidden-import yt_slurp_engine
           yt_slurp_app.py
+
+      - name: Check the build can use a separate yt-dlp
+        shell: pwsh
+        run: |
+          pip install --target engine-test --no-deps yt-dlp yt-dlp-ejs
+          $p = Start-Process dist\yt-slurp.exe -ArgumentList '--check-engine','engine-test','engine-report.txt' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Engine check failed: $(Get-Content engine-report.txt)" }
 
       - name: Check the build starts
         shell: pwsh

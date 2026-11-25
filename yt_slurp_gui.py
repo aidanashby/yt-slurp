@@ -18,7 +18,8 @@ import time
 import tkinter as tk
 import wave
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
+from tkinter import messagebox as system_messagebox
 from tkinter import font as tkfont
 
 try:  # plays WAV files on Windows; the Play button is hidden elsewhere
@@ -49,32 +50,32 @@ UPDATE_CHECK_DELAY_MS = 3000
 SEARCH_DELAY_MS = 150
 MAX_HIGHLIGHTS = 2000
 
-# Colours, after the Whisper Transcriber app.
-BG = "#ececec"
-CARD = "#ffffff"
-BORDER = "#d4d4d4"
-TEXT = "#2b2b2b"
+# Dark colours: grey panels with YouTube's red for main actions and its blue for links.
+BG = "#1b1e23"       # gaps between panels
+CARD = "#2c3037"     # panels and toolbars
+FIELD = "#1f2227"    # lists, text and entry boxes
+BORDER = "#4a505a"
+TEXT = "#f1f3f5"
 # Every text and button colour pair meets WCAG AA (4.5:1) on its background.
-MUTED = "#5f5f5f"
-GREEN, GREEN_DARK = "#2e7d32", "#1b5e20"
-SLATE, SLATE_DARK = "#5b6f7a", "#4a5c66"
-BLUE, BLUE_DARK = "#1565c0", "#0d47a1"
-RED, RED_DARK = "#c62828", "#b71c1c"
-FOCUS = "#111111"
-MENU_BG, MENU_HOVER = "#f7f7f7", "#e3e3e3"
-DISABLED = "#b9c3c8"
-BORDER_FINE = "#c4c4c4"
-SHADOW, SHADOW_SOFT = "#d9d9d9", "#e4e4e4"
-MATCH_BG, CURRENT_BG = "#fff59d", "#ffb74d"
+MUTED = "#b0b7c1"
+ACCENT, ACCENT_DARK = "#e0002d", "#b80025"
+SLATE, SLATE_DARK = "#474d57", "#59606b"
+LINK, LINK_DARK = "#3ea6ff", "#6fbcff"
+DANGER = "#ffb3bb"   # text of buttons that delete or stop
+FOCUS = "#ffffff"
+MENU_BG = "#24282e"
+DISABLED, DISABLED_TEXT = "#353a42", "#8a919c"
+SELECTED = "#5c1f2e"
+MATCH_BG, CURRENT_BG = "#5f5200", "#8a4b00"
 FONT = "Segoe UI"
 
 # Output kinds: label, colour, symbol. Each kind has a symbol as well as a
 # colour, so nothing depends on colour alone. Chips are in alphabetical order.
 KINDS = {
-    "link": ("Links", "#546e7a", "\u2197"),
-    "skipped": ("Skipped", "#8a5300", "\u2298"),
-    "transcript": ("Transcripts", "#2e7d32", "\u25a0"),
-    "wav": ("WAVs", "#1565c0", "\u266a"),
+    "link": ("Links", "#b9c4d0", "\u2197"),
+    "skipped": ("Skipped", "#f2b35e", "\u2298"),
+    "transcript": ("Transcripts", "#ff8593", "\u25a0"),
+    "wav": ("WAVs", "#3ea6ff", "\u266a"),
 }
 
 
@@ -121,6 +122,7 @@ DEFAULT_SETTINGS = {
     "make_links": True,
     "test_run": False,
     "limit": 5,
+    "warn_over": 500,
     "include_non_english": False,
     "chunk_minutes": 60,
     "pace": "normal",
@@ -169,15 +171,16 @@ def save_settings(data: dict) -> None:
     os.replace(tmp, folder / "settings.json")
 
 
-def build_argv(settings: dict, url: str = "", list_file: str = "", only_type: str | None = None) -> list[str]:
+def build_argv(settings: dict, url: str | list[str] = "", list_file: str = "", only_type: str | None = None) -> list[str]:
     """Turn the window's settings into yt-slurp command-line arguments.
     only_type comes from the Slurp button's menu (just one kind of video)."""
-    argv = ["--file", list_file] if list_file else [url]
+    argv = ["--file", list_file] if list_file else [url] if isinstance(url, str) else list(url)
     argv += ["--output", settings["output"],
              "--min-minutes", str(settings["min_minutes"]),
              "--lang", settings["lang"],
              "--chunk-minutes", str(settings["chunk_minutes"]),
              "--pace", settings["pace"],
+             "--warn-over", str(settings["warn_over"]),
              ]
     if only_type:
         argv += ["--types", only_type]
@@ -503,7 +506,7 @@ class FlowBar(tk.Frame):
 
 
 class RoundButton(tk.Canvas):
-    """A soft-cornered flat button, like the Whisper app's."""
+    """A soft-cornered flat button, in the toolbar style."""
 
     def __init__(self, parent, text, command, colour=SLATE, hover=SLATE_DARK, fg="white",
                  width=None, height=34, font=(FONT, 10), bg=BG, pad=28):
@@ -529,8 +532,9 @@ class RoundButton(tk.Canvas):
 
     def draw(self, fill):
         self.delete("all")
-        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 9, fill=fill, outline=fill)
-        self.create_text(self.w / 2, self.h / 2, text=self.text, fill=self.fg, font=self.font)
+        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 5, fill=fill, outline=fill)
+        self.create_text(self.w / 2, self.h / 2, text=self.text, font=self.font,
+                         fill=self.fg if self.enabled else DISABLED_TEXT)
         if self.focused:
             rounded_rect(self, 3, 3, self.w - 3, self.h - 3, 7, fill="", outline="white", width=2)
 
@@ -592,24 +596,25 @@ class SplitButton(tk.Canvas):
 
     def draw(self):
         self.delete("all")
-        base = GREEN if self.enabled else DISABLED
-        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 10, fill=base, outline=base)
+        base = ACCENT if self.enabled else DISABLED
+        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 5, fill=base, outline=base)
         if self.enabled and self.hover:
             x1, x2 = (1, self.w - self.arrow_w) if self.hover == "main" else (self.w - self.arrow_w, self.w - 1)
             self.create_rectangle(x1 + (8 if self.hover == "main" else 0), 2,
                                   x2 - (8 if self.hover == "arrow" else 0), self.h - 2,
-                                  fill=GREEN_DARK, outline=GREEN_DARK)
+                                  fill=ACCENT_DARK, outline=ACCENT_DARK)
             if self.hover == "main":
-                rounded_rect(self, 1, 1, 30, self.h - 1, 10, fill=GREEN_DARK, outline=GREEN_DARK)
+                rounded_rect(self, 1, 1, 30, self.h - 1, 5, fill=ACCENT_DARK, outline=ACCENT_DARK)
             else:
-                rounded_rect(self, self.w - 30, 1, self.w - 1, self.h - 1, 10, fill=GREEN_DARK, outline=GREEN_DARK)
-        self.create_line(self.w - self.arrow_w, 8, self.w - self.arrow_w, self.h - 8, fill="#ffffff", width=1)
-        self.create_text((self.w - self.arrow_w) / 2, self.h / 2, text=self.text, fill="white",
+                rounded_rect(self, self.w - 30, 1, self.w - 1, self.h - 1, 5, fill=ACCENT_DARK, outline=ACCENT_DARK)
+        self.create_line(self.w - self.arrow_w, 8, self.w - self.arrow_w, self.h - 8, fill="#ffffff" if self.enabled else DISABLED_TEXT, width=1)
+        ink = "white" if self.enabled else DISABLED_TEXT
+        self.create_text((self.w - self.arrow_w) / 2, self.h / 2, text=self.text, fill=ink,
                          font=(FONT, 11, "bold"))
         cx, cy = self.w - self.arrow_w / 2, self.h / 2
-        self.create_polygon(cx - 5, cy - 2, cx + 5, cy - 2, cx, cy + 4, fill="white", outline="white")
+        self.create_polygon(cx - 5, cy - 2, cx + 5, cy - 2, cx, cy + 4, fill=ink, outline=ink)
         if self.focused:
-            rounded_rect(self, 3, 3, self.w - 3, self.h - 3, 8, fill="", outline="white", width=2)
+            rounded_rect(self, 3, 3, self.w - 3, self.h - 3, 4, fill="", outline="white", width=2)
 
     def click(self, e):
         if not self.enabled:
@@ -650,12 +655,12 @@ class Chip(tk.Canvas):
         w = tmp.winfo_reqwidth() + 22
         tmp.destroy()
         self.configure(width=w)
-        fill = self.colour if self.on else CARD
-        outline = self.colour if self.on else BORDER
-        rounded_rect(self, 1, 2, w - 1, 26, 12, fill=fill, outline=outline)
-        self.create_text(11, 14, text=text, anchor="w", fill="white" if self.on else MUTED, font=(FONT, 9))
+        rounded_rect(self, 1, 2, w - 1, 26, 5, fill=SLATE if self.on else CARD, outline=SLATE if self.on else BORDER)
+        self.create_text(11, 14, text=text, anchor="w", fill=TEXT if self.on else MUTED, font=(FONT, 9))
+        # the symbol again, in the kind's colour
+        self.create_text(11, 14, text=self.symbol, anchor="w", fill=self.colour if self.on else MUTED, font=(FONT, 9))
         if self.focused:
-            rounded_rect(self, 1, 2, w - 1, 26, 12, fill="", outline=FOCUS, width=2)
+            rounded_rect(self, 1, 2, w - 1, 26, 5, fill="", outline=FOCUS, width=2)
 
     def toggle(self, _=None):
         self.on = not self.on
@@ -672,19 +677,19 @@ class SearchBox(tk.Frame):
     """A flat entry with a placeholder and an optional × to clear it."""
 
     def __init__(self, parent, placeholder, on_change, clear_button=True, width=30):
-        super().__init__(parent, bg=CARD, highlightthickness=1, highlightbackground=BORDER,
-                         highlightcolor=BLUE)
+        super().__init__(parent, bg=FIELD, highlightthickness=1, highlightbackground=BORDER,
+                         highlightcolor=LINK)
         self.placeholder, self.on_change = placeholder, on_change
         self.var = tk.StringVar()
-        self.entry = tk.Entry(self, textvariable=self.var, relief="flat", bd=4, bg=CARD, fg=TEXT,
+        self.entry = tk.Entry(self, textvariable=self.var, relief="flat", bd=4, bg=FIELD, fg=TEXT,
                               font=(FONT, 10), width=width, insertbackground=TEXT)
         self.entry.pack(side="left", fill="x", expand=True)
-        self.hint = tk.Label(self, text=placeholder, bg=CARD, fg=MUTED, font=(FONT, 10))
+        self.hint = tk.Label(self, text=placeholder, bg=FIELD, fg=MUTED, font=(FONT, 10))
         self.hint.place(x=6, rely=0.5, anchor="w")
         self.hint.bind("<Button-1>", lambda e: self.entry.focus_set())
         self.clear = None
         if clear_button:
-            self.clear = tk.Label(self, text="×", bg=CARD, fg=MUTED, font=(FONT, 12), cursor="hand2")
+            self.clear = tk.Label(self, text="×", bg=FIELD, fg=MUTED, font=(FONT, 12), cursor="hand2")
             self.clear.bind("<Button-1>", lambda e: self.var.set(""))
         self.var.trace_add("write", lambda *a: self.changed())
         self.entry.bind("<Escape>", lambda e: self.var.set(""))
@@ -704,6 +709,336 @@ class SearchBox(tk.Frame):
 
     def get(self):
         return self.var.get()
+
+
+class LinkBox(tk.Frame):
+    """Links as blocks, like addresses in an email's To field. Text becomes a
+    block on leaving the box, or on Enter, a space or a comma. Click a block to
+    edit it, × to remove it."""
+
+    ROWS = 2  # then it scrolls
+
+    def __init__(self, parent, placeholder, on_enter):
+        super().__init__(parent, bg=FIELD, highlightthickness=1, highlightbackground=BORDER, highlightcolor=LINK)
+        self.on_enter = on_enter
+        self.links: list[str] = []
+        self.at = 0  # where the entry sits among the links
+        self.original = ""  # the link being edited, for Escape
+        self.busy = False
+        self.blocks: list = []
+        self.var = tk.StringVar()
+        self.font = tkfont.Font(font=(FONT, 11))
+        self.row_h = self.font.metrics("linespace") + 14
+        self.canvas = tk.Canvas(self, height=self.ROWS * self.row_h + 4, bg=FIELD, highlightthickness=0,
+                                cursor="xterm", takefocus=0)
+        self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview, style="Slim.Vertical.TScrollbar")
+        self.canvas.configure(yscrollcommand=self.bar.set)
+        self.clear_btn = tk.Label(self, text="Clear all", bg=FIELD, fg=LINK, font=(FONT, 9, "underline"),
+                                  cursor="hand2", takefocus=1, highlightthickness=1, highlightbackground=FIELD,
+                                  highlightcolor=FOCUS)
+        for key in ("<Button-1>", "<Return>", "<space>"):
+            self.clear_btn.bind(key, lambda e: (self.after_idle(self.clear), "break")[-1])
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.entry = tk.Entry(self.canvas, textvariable=self.var, relief="flat", bd=0, highlightthickness=0, bg=FIELD,
+                              fg=TEXT, font=self.font, insertbackground=TEXT, insertwidth=2,
+                              selectbackground=SELECTED, selectforeground=TEXT)
+        self.entry_id = self.canvas.create_window(0, 0, window=self.entry, anchor="nw")
+        self.hint = tk.Label(self.canvas, text=placeholder, bg=FIELD, fg=MUTED, font=(FONT, 10), cursor="xterm")
+        self.hint.bind("<Button-1>", lambda e: self.entry.focus_set())
+        self.entry.bind("<Return>", self.enter)
+        self.entry.bind("<Escape>", self.escape)
+        self.entry.bind("<FocusOut>", lambda e: self.commit())
+        self.entry.bind("<BackSpace>", self.backspace)
+        self.entry.bind("<<Paste>>", self.paste)
+        self.canvas.bind("<Button-1>", lambda e: (self.commit(), self.entry.focus_set()))
+        self.canvas.bind("<Configure>", lambda e: self.layout())
+        self.wheel(self.canvas)
+        self.wheel(self.entry)
+        self.var.trace_add("write", lambda *a: self.typed())
+        # Clicking an empty part of the window does not move Tk's focus, so watch for clicks
+        self.winfo_toplevel().bind("<Button-1>", self.clicked, add="+")
+        self.layout()
+
+    def wheel(self, w):
+        w.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
+               if self.scrolls else None)
+
+    def clicked(self, event):
+        if not str(event.widget).startswith(str(self)):
+            self.commit()
+
+    def rebuild(self, focus=False):
+        for b in self.blocks:
+            b.destroy()  # its canvas item goes with it
+        self.blocks = [self.block(x) for x in self.links]
+        self.busy = False
+        if self.links:
+            self.clear_btn.pack(side="right", padx=8, before=self.canvas)
+        else:
+            self.clear_btn.pack_forget()
+        self.layout()
+        if focus:
+            self.entry.focus_set()
+            self.entry.icursor("end")
+            self.show_entry()
+
+    def layout(self):
+        """Blocks and the entry in rows, wrapping at the box's width."""
+        c, gap = self.canvas, 6
+        width = max(c.winfo_width(), 200)
+        for item in c.find_withtag("block"):
+            c.delete(item)
+        x, row = gap, 0
+        for i in range(len(self.links) + 1):
+            if i == self.at:
+                need = max(240, self.font.measure(self.var.get()) + 16)
+                if x > gap and x + need > width - gap:
+                    x, row = gap, row + 1
+                # Typing at the end uses the rest of the row
+                w = width - gap - x if i == len(self.links) else min(need, width - gap - x)
+                h = self.font.metrics("linespace") + 2
+                self.entry_y = row * self.row_h + 2
+                c.coords(self.entry_id, x, self.entry_y + (self.row_h - h) // 2)
+                c.itemconfigure(self.entry_id, width=w, height=h)
+                self.hint_x = x + 5
+                x += w + gap
+            if i < len(self.links):
+                b = self.blocks[i]
+                w = min(b.winfo_reqwidth(), width - 2 * gap)
+                if x > gap and x + w > width - gap:
+                    x, row = gap, row + 1
+                c.create_window(x, row * self.row_h + 4, window=b, anchor="nw", width=w, height=self.row_h - 4,
+                                tags="block")
+                x += w + gap
+        total = (row + 1) * self.row_h + 4
+        c.configure(scrollregion=(0, 0, width, total), yscrollincrement=self.row_h)
+        self.scrolls = total > self.ROWS * self.row_h + 4
+        if self.scrolls and not self.bar.winfo_manager():
+            self.bar.pack(side="right", fill="y", before=self.canvas)
+        elif not self.scrolls and self.bar.winfo_manager():
+            self.bar.pack_forget()
+            c.yview_moveto(0)
+        self.show_hint()
+
+    def show_entry(self):
+        total = float(self.canvas.cget("scrollregion").split()[3])
+        if self.scrolls:
+            self.canvas.yview_moveto(max(0, self.entry_y - self.row_h) / total)
+
+    def block(self, link):
+        bad = ys.classify_url(link)[0] == "unknown"
+        f = tk.Frame(self.canvas, bg=SLATE, highlightthickness=1, highlightbackground="#ff8593" if bad else SLATE,
+                     cursor="hand2")
+        shown = re.sub(r"^https?://(www\.)?", "", link)
+        shown = shown if len(shown) <= 60 else shown[:59] + "…"
+        x = tk.Label(f, text="×", bg=SLATE, fg=TEXT, font=(FONT, 12), takefocus=1, highlightthickness=1,
+                     highlightbackground=SLATE, highlightcolor=FOCUS)
+        x.pack(side="right", padx=(2, 4))
+        name = tk.Label(f, text=("⚠ " if bad else "") + shown, bg=SLATE, fg=DANGER if bad else TEXT,
+                        font=(FONT, 10), takefocus=1, highlightthickness=1, highlightbackground=SLATE,
+                        highlightcolor=FOCUS, anchor="w")
+        name.pack(side="left", padx=(5, 0))
+        for w, action in ((name, self.edit), (x, self.remove)):
+            for key in ("<Button-1>", "<Return>", "<space>"):
+                w.bind(key, lambda e, a=action: (self.after_idle(a, link), "break")[-1])
+            self.wheel(w)
+        return f
+
+    def clear(self):
+        self.set_links([])
+        self.entry.focus_set()
+
+    def show_hint(self):
+        if self.links or self.var.get():
+            self.hint.place_forget()
+        else:
+            self.hint.place(x=self.hint_x, y=self.entry_y + self.row_h // 2, anchor="w")
+
+    def typed(self):
+        if not self.busy:
+            self.layout()
+            self.show_entry()
+        if not self.busy and re.search(r"[\s,;]", self.var.get().strip()) or self.var.get().endswith((" ", ",", ";")):
+            self.after_idle(self.commit, True)
+
+    def paste(self, _):
+        """Several links at once become blocks straight away; line breaks would be lost in an entry."""
+        try:
+            text = self.clipboard_get()
+        except tk.TclError:
+            return None
+        found = ys.split_links(text)
+        if len(found) < 2:
+            return None
+        self.add(found + ([self.var.get()] if self.var.get().strip() else []), focus=True)
+        return "break"
+
+    def commit(self, focus=False):
+        """Turn what is typed into blocks."""
+        if self.busy:
+            return
+        if self.var.get().strip():
+            self.add(ys.split_links(self.var.get()), focus)
+        elif self.original or self.at != len(self.links):  # an edited link was emptied
+            self.add([], focus)
+
+    def add(self, new, focus=False):
+        self.busy = True
+        have = {ys.classify_url(x)[1] for x in self.links}
+        fresh = []
+        for x in new:
+            key = ys.classify_url(x)[1]
+            if key not in have:
+                have.add(key)
+                fresh.append(x)
+        self.links[self.at:self.at] = fresh
+        self.at, self.original = len(self.links), ""
+        self.var.set("")
+        self.rebuild(focus)
+
+    def edit(self, link):
+        self.commit()
+        if link in self.links:
+            self.at = self.links.index(link)
+            self.original = self.links.pop(self.at)
+            self.busy = True
+            self.var.set(self.original)
+            self.rebuild(focus=True)
+
+    def remove(self, link):
+        self.commit()
+        if link in self.links:
+            self.links.remove(link)
+            self.at = len(self.links)
+            self.rebuild(focus=True)
+
+    def enter(self, _):
+        if self.var.get().strip():
+            self.commit(focus=True)
+        else:
+            self.on_enter()
+        return "break"
+
+    def escape(self, _):
+        self.busy = True
+        original = self.original
+        self.var.set("")
+        self.add([original] if original else [], focus=True)
+
+    def backspace(self, _):
+        if not self.var.get() and not self.original and self.links:
+            self.after_idle(self.edit, self.links[-1])
+            return "break"
+        return None
+
+    def get(self) -> list[str]:
+        self.commit()
+        return list(self.links)
+
+    def set_links(self, links):
+        self.links, self.at, self.original = [], 0, ""
+        self.busy = True
+        self.var.set("")
+        self.add(links)
+
+
+class DropMenu:
+    """A drop-down menu. Windows draws a white border round its own, which cannot be changed."""
+
+    def __init__(self, root):
+        self.root, self.items, self.top = root, [], None
+        root.bind("<Button-1>", self.close, add="+")
+        root.bind("<Configure>", lambda e: e.widget is root and self.close(), add="+")  # moved or resized
+
+    def add_command(self, label, command):
+        self.items.append((label, command))
+
+    def add_separator(self):
+        self.items.append(None)
+
+    def popup(self, x, y):
+        # After the click that asked for it, which would otherwise close it
+        self.root.after_idle(self.open, x, y)
+
+    def open(self, x, y):
+        self.close()
+        top = self.top = tk.Toplevel(self.root, bg=BORDER)
+        top.withdraw()
+        top.overrideredirect(True)
+        top.attributes("-topmost", True)  # it closes as soon as focus leaves
+        body = tk.Frame(top, bg=CARD)
+        body.pack(padx=1, pady=1)
+        tk.Frame(body, bg=CARD, height=4).pack()
+        self.labels = []
+        for item in self.items:
+            if item is None:
+                tk.Frame(body, bg=BORDER, height=1).pack(fill="x", pady=4)
+                continue
+            lab = tk.Label(body, text=item[0], bg=CARD, fg=TEXT, font=(FONT, 10), anchor="w", padx=14, pady=6,
+                           cursor="hand2", takefocus=1)
+            lab.pack(fill="x")
+            lab.bind("<Enter>", lambda e: e.widget.focus_set())
+            lab.bind("<FocusIn>", lambda e: e.widget.configure(bg=SLATE_DARK))
+            lab.bind("<FocusOut>", lambda e: e.widget.configure(bg=CARD))
+            for key in ("<Button-1>", "<Return>", "<space>"):
+                lab.bind(key, lambda e, run=item[1]: (self.close(), self.root.after_idle(run), "break")[-1])
+            i = len(self.labels)
+            lab.bind("<Down>", lambda e, i=i: self.labels[(i + 1) % len(self.labels)].focus_set())
+            lab.bind("<Up>", lambda e, i=i: self.labels[i - 1].focus_set())
+            self.labels.append(lab)
+        tk.Frame(body, bg=CARD, height=4).pack()
+        top.bind("<Escape>", self.close)
+        top.bind("<FocusOut>", lambda e: self.root.after(50, self.close_if_left))
+        top.update_idletasks()
+        # Stay inside the window
+        right = self.root.winfo_rootx() + self.root.winfo_width() - top.winfo_reqwidth() - 12
+        top.geometry(f"+{max(0, min(x, right))}+{y}")
+        top.deiconify()
+        top.lift()
+        self.labels[0].focus_force()
+
+    def close_if_left(self):
+        if self.top and not str(self.root.tk.call("focus")).startswith(str(self.top)):
+            self.close()
+
+    def close(self, _=None):
+        if self.top:
+            top, self.top = self.top, None
+            top.destroy()
+
+
+class Tooltip:
+    """A control's name, shown on hover or keyboard focus."""
+
+    def __init__(self, widget, text):
+        self.widget, self.text, self.tip, self.job = widget, text, None, None
+        for seq in ("<Enter>", "<FocusIn>"):
+            widget.bind(seq, self.wait, add="+")
+        for seq in ("<Leave>", "<FocusOut>", "<Button-1>", "<Destroy>"):
+            widget.bind(seq, self.hide, add="+")
+
+    def wait(self, _):
+        self.hide()
+        self.job = self.widget.after(400, self.show)
+
+    def show(self):
+        w = self.widget
+        self.tip = tk.Toplevel(w)
+        self.tip.overrideredirect(True)
+        self.tip.attributes("-topmost", True)
+        tk.Label(self.tip, text=self.text, bg=MENU_BG, fg=TEXT, font=(FONT, 9), padx=8, pady=3,
+                 highlightthickness=1, highlightbackground=BORDER).pack()
+        self.tip.update_idletasks()
+        x = w.winfo_rootx() + (w.winfo_width() - self.tip.winfo_reqwidth()) // 2
+        self.tip.geometry(f"+{x}+{w.winfo_rooty() + w.winfo_height() + 4}")
+
+    def hide(self, _=None):
+        if self.job:
+            self.widget.after_cancel(self.job)
+            self.job = None
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
 
 
 def card(parent, **kw) -> tk.Frame:
@@ -744,6 +1079,13 @@ class GuiUI:
     def choose(self, question, options):
         return self._ask("choose", question, options)
 
+    def confirm_many(self, groups):
+        return self._ask("many", groups)
+
+    def problem(self, message, details) -> None:
+        self.say(f"\n{message}\n\nDetails:\n{details}")
+        self._post("problem", message, details)
+
     def confirm_delete(self, message) -> bool:
         return bool(self._ask("confirm_delete", message))
 
@@ -780,16 +1122,21 @@ class App:
         self.playing = False
         self.closed = False
         self.update_info = None
+        self.last_start = None
+        self.last_problem = None
         self.match_i = -1
         ys.set_ui(GuiUI(self))
 
         root.title("yt-slurp")
         root.geometry("1220x800")
-        root.minsize(940, 600)
+        root.minsize(660, 560)  # fits half a small screen when snapped
         root.configure(bg=BG)
+        dark_title_bar(root)
         self.set_icon()
         self.style()
-        self.build_menu()
+        if os.name == "nt":
+            self.title_bar = TitleBar(root, self.icon_img)
+            self.title_bar.pack(fill="x")
         self.build_top()
         self.build_bottom()
         self.build_middle()
@@ -822,96 +1169,125 @@ class App:
     def style(self):
         s = ttk.Style()
         s.theme_use("clam")
-        s.configure(".", font=(FONT, 10), background=BG, foreground=TEXT)
-        s.configure("Out.Treeview", background=CARD, fieldbackground=CARD, foreground=TEXT,
+        s.configure(".", font=(FONT, 10), background=BG, foreground=TEXT, insertcolor=TEXT,
+                    selectbackground=SELECTED, selectforeground=TEXT)
+        for opt, val in (("background", FIELD), ("foreground", TEXT), ("selectBackground", SELECTED),
+                         ("selectForeground", TEXT)):
+            self.root.option_add(f"*TCombobox*Listbox.{opt}", val)  # the drop-down list
+        self.root.option_add("*insertWidth", 2)
+        self.root.option_add("*insertBackground", TEXT)
+        s.configure("Out.Treeview", background=FIELD, fieldbackground=FIELD, foreground=TEXT,
                     rowheight=26, borderwidth=0, font=(FONT, 10))
         s.layout("Out.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
-        s.map("Out.Treeview", background=[("selected", "#e3f2fd")], foreground=[("selected", TEXT)])
+        s.map("Out.Treeview", background=[("selected", SELECTED)], foreground=[("selected", TEXT)])
         s.layout("Slim.Vertical.TScrollbar", [
             ("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
                 ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-        s.configure("Slim.Vertical.TScrollbar", troughcolor=CARD, background="#949494", bordercolor=CARD,
-                    lightcolor="#949494", darkcolor="#949494", arrowsize=7, width=7, gripcount=0)
-        s.map("Slim.Vertical.TScrollbar", background=[("active", "#6f6f6f")])
-        s.configure("TCombobox", fieldbackground=CARD, background=CARD, arrowcolor=SLATE, bordercolor=BORDER,
-                    lightcolor=CARD, darkcolor=CARD, padding=4)
-        s.map("TCombobox", fieldbackground=[("readonly", CARD)], selectbackground=[("readonly", CARD)],
+        s.configure("Slim.Vertical.TScrollbar", troughcolor=FIELD, background="#6b727d", bordercolor=FIELD,
+                    lightcolor="#6b727d", darkcolor="#6b727d", arrowsize=7, width=7, gripcount=0)
+        s.map("Slim.Vertical.TScrollbar", background=[("disabled", FIELD), ("active", "#8a919c")])
+        s.configure("TCombobox", fieldbackground=FIELD, background=CARD, arrowcolor=TEXT, bordercolor=BORDER,
+                    lightcolor=FIELD, darkcolor=FIELD, padding=4)
+        s.map("TCombobox", fieldbackground=[("readonly", FIELD)], selectbackground=[("readonly", FIELD)],
               selectforeground=[("readonly", TEXT)])
         for w in ("TCheckbutton", "TRadiobutton"):
-            s.configure(w, background=CARD, foreground=TEXT, font=(FONT, 10), indicatorbackground=CARD,
-                        indicatorforeground=GREEN_DARK, upperbordercolor=BORDER, lowerbordercolor=BORDER)
-            s.map(w, background=[("active", CARD)], indicatorbackground=[("disabled", "#f0f0f0")],
+            s.configure(w, background=CARD, foreground=TEXT, font=(FONT, 10), indicatorbackground=FIELD,
+                        indicatorforeground="#ffffff", upperbordercolor=BORDER, lowerbordercolor=BORDER)
+            s.map(w, background=[("active", CARD)], indicatorbackground=[("disabled", CARD), ("selected", ACCENT)],
                   foreground=[("disabled", MUTED)])
-        s.configure("TSpinbox", fieldbackground=CARD, background=CARD, arrowcolor=SLATE, bordercolor=BORDER,
-                    lightcolor=CARD, darkcolor=CARD)
-        s.configure("TEntry", fieldbackground=CARD, bordercolor=BORDER, lightcolor=CARD, darkcolor=CARD)
-        s.configure("Horizontal.TProgressbar", troughcolor="#dcdcdc", background=GREEN, bordercolor=BG,
-                    lightcolor=GREEN, darkcolor=GREEN, thickness=6)
+        self.check_images(s)
+        s.configure("TSpinbox", fieldbackground=FIELD, background=CARD, arrowcolor=TEXT, bordercolor=BORDER,
+                    lightcolor=FIELD, darkcolor=FIELD)
+        s.configure("TEntry", fieldbackground=FIELD, bordercolor=BORDER, lightcolor=FIELD, darkcolor=FIELD)
+        s.configure("Horizontal.TProgressbar", troughcolor=FIELD, background=ACCENT, bordercolor=BG,
+                    lightcolor=ACCENT, darkcolor=ACCENT, thickness=6)
+
+    def check_images(self, s):
+        """Tick boxes with a tick; the theme's own draw a cross."""
+        def image(fill, edge, tick=None):
+            img = tk.PhotoImage(master=self.root, width=22, height=16)
+            img.put(edge, to=(0, 0, 16, 16))
+            img.put(fill, to=(1, 1, 15, 15))
+            if tick:
+                for x, y in ((3, 7), (4, 8), (5, 9), (6, 10), (7, 9), (8, 8), (9, 7), (10, 6), (11, 5), (12, 4)):
+                    img.put(tick, to=(x, y, x + 1, y + 2))
+            return img
+        self.tick_imgs = (image(FIELD, MUTED), image(ACCENT, ACCENT, "#ffffff"), image(CARD, BORDER),
+                          image(DISABLED, BORDER, DISABLED_TEXT))
+        off, on, off_dis, on_dis = self.tick_imgs
+        s.element_create("Tick.indicator", "image", off, ("disabled", "selected", on_dis), ("disabled", off_dis),
+                         ("selected", on))
+        s.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+            ("Tick.indicator", {"side": "left", "sticky": ""}),
+            ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+                ("Checkbutton.label", {"sticky": "nswe"})]})]})])
 
     # ----- layout -----
 
-    def build_menu(self):
-        """A drawn menu bar, so it can hold the blue Update button (Windows'
-        own menu bar cannot be coloured)."""
-        bar = self.menu_bar = tk.Frame(self.root, bg=MENU_BG)
-        bar.pack(fill="x")
-        tools = tk.Menu(self.root, tearoff=False)
+    def build_menu(self, bar):
+        """Settings, Tools and Help as icon buttons, with room for the Update button."""
+        tools = DropMenu(self.root)
         tools.add_command(label="Make Gemini Notebook files", command=self.make_gemini)
         tools.add_command(label="Open the manifest in Excel", command=self.open_manifest)
         tools.add_command(label="Show the full log", command=self.show_log)
         if not setup.frozen():
             tools.add_separator()
             tools.add_command(label="Run the self-test", command=self.self_test)
-        helpm = tk.Menu(self.root, tearoff=False)
+        helpm = DropMenu(self.root)
         helpm.add_command(label="How to use yt-slurp", command=self.welcome)
         helpm.add_command(label="Check for updates", command=lambda: self.check_updates(quiet=False))
         helpm.add_command(label=f"About yt-slurp {ys.__version__}", command=self.about)
-        self.menu_item(bar, "Settings", self.open_settings)
-        self.menu_item(bar, "Tools", lambda w: tools.tk_popup(w.winfo_rootx(), w.winfo_rooty() + w.winfo_height()),
-                       popup=True)
-        self.menu_item(bar, "Help", lambda w: helpm.tk_popup(w.winfo_rootx(), w.winfo_rooty() + w.winfo_height()),
-                       popup=True)
-        self.update_btn = RoundButton(bar, "Update", self.do_update, colour=BLUE, hover=BLUE_DARK, height=24,
-                                      font=(FONT, 9, "bold"), bg=MENU_BG)
-        tk.Frame(bar, bg=BORDER, height=1).place(relx=0, rely=1, relwidth=1, anchor="sw")
+        for name, icon, plain, command in (
+                ("Help", "\ue897", "?", helpm), ("Tools", "\ue90f", "\u2692", tools),
+                ("Settings", "\ue713", "\u2699", self.open_settings)):
+            self.icon_button(bar, name, icon, plain, command).pack(side="right", padx=(6, 0))
+        # Tab order follows stacking order: Settings first, as it looks
+        for w in reversed(bar.winfo_children()):
+            tk.Misc.tkraise(w)  # a canvas's own lift() is for its drawings
+        self.update_btn = RoundButton(bar, "Update", self.do_update, colour=LINK, hover=LINK_DARK, fg="#0f0f0f",
+                                      height=32, font=(FONT, 9, "bold"), bg=CARD, pad=20)
 
-    def menu_item(self, bar, text, command, popup=False):
-        lab = tk.Label(bar, text=text, bg=MENU_BG, fg=TEXT, font=(FONT, 10), padx=10, pady=4, cursor="hand2",
-                       takefocus=1, highlightthickness=1, highlightbackground=MENU_BG, highlightcolor=FOCUS)
-        lab.pack(side="left")
-        run = (lambda e=None: command(lab)) if popup else (lambda e=None: command())
-        lab.bind("<Button-1>", run)
-        for key in ("<Return>", "<space>", "<Down>"):
-            lab.bind(key, run)
-        lab.bind("<Enter>", lambda e: lab.configure(bg=MENU_HOVER))
-        lab.bind("<Leave>", lambda e: lab.configure(bg=MENU_BG))
-        return lab
+    def icon_button(self, bar, name, icon, plain, command):
+        """command: something to run, or a menu to open. plain: for PCs without Windows' icon fonts."""
+        families = tkfont.families(self.root)
+        font = next((f for f in ("Segoe Fluent Icons", "Segoe MDL2 Assets") if f in families), None)
+        b = RoundButton(bar, icon if font else plain, None, width=40, height=32,
+                        font=(font, 12) if font else (FONT, 13), bg=CARD)
+        if isinstance(command, DropMenu):
+            b.command = lambda: command.popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height() + 2)
+        else:
+            b.command = command
+        Tooltip(b, name)
+        return b
 
     def build_top(self):
-        top = card(self.root)
-        top.pack(fill="x", padx=12, pady=(10, 6))
+        top = tk.Frame(self.root, bg=CARD)
+        top.pack(fill="x")
+        tk.Frame(top, bg=BORDER, height=1).pack(side="bottom", fill="x")
         inner = tk.Frame(top, bg=CARD)
         inner.pack(fill="x", padx=12, pady=10)
-        self.url_box = SearchBox(inner, "Paste a YouTube channel or playlist link", lambda: None,
-                                 clear_button=True, width=60)
-        self.url_box.entry.configure(font=(FONT, 11))
-        self.url_box.pack(side="left", fill="x", expand=True, ipady=3)
+        self.url_box = LinkBox(inner, "Paste YouTube channel, playlist or video links", self.slurp)
+        self.url_box.pack(side="left", fill="x", expand=True)
         self.url_var = self.url_box.var
-        self.url_box.entry.bind("<Return>", lambda e: self.slurp())
-        self.slurp_btn = SplitButton(inner, "Slurp", self.slurp, self.slurp_menu)
-        self.slurp_btn.pack(side="left", padx=(10, 0))
-        self.pause_btn = RoundButton(inner, "Pause", self.toggle_pause, colour=SLATE, hover=SLATE_DARK,
-                                     width=92, height=38, bg=CARD)
+        side = tk.Frame(inner, bg=CARD)
+        side.pack(side="right", padx=(12, 0))
+        bar = self.menu_bar = tk.Frame(side, bg=CARD)
+        bar.pack(fill="x", pady=(0, 8))
+        self.build_menu(bar)
+        acts = tk.Frame(side, bg=CARD)
+        acts.pack(fill="x")
+        self.slurp_btn = SplitButton(acts, "\u25b6  Slurp", self.slurp, self.slurp_menu)
+        self.slurp_btn.pack(side="left")
+        self.pause_btn = RoundButton(acts, "Pause", self.toggle_pause, width=92, height=38, bg=CARD)
         self.pause_btn.pack(side="left", padx=(8, 0))
-        self.stop_btn = RoundButton(inner, "Stop", self.stop, colour=RED, hover=RED_DARK, width=80, height=38,
-                                    bg=CARD)
+        self.stop_btn = RoundButton(acts, "Stop", self.stop, fg=DANGER, width=80, height=38, bg=CARD)
         self.stop_btn.pack(side="left", padx=(8, 0))
         self.pause_btn.set_enabled(False)
         self.stop_btn.set_enabled(False)
 
         row = tk.Frame(top, bg=CARD)
         row.pack(fill="x", padx=12, pady=(0, 10))
-        link = tk.Label(row, text="Use a list of links from a file", bg=CARD, fg=BLUE, font=(FONT, 9, "underline"),
+        link = tk.Label(row, text="Use a list of links from a file", bg=CARD, fg=LINK, font=(FONT, 9, "underline"),
                         cursor="hand2", takefocus=1, highlightthickness=1, highlightbackground=CARD,
                         highlightcolor=FOCUS)
         link.pack(side="left")
@@ -926,15 +1302,15 @@ class App:
         self.source_box.bind("<<ComboboxSelected>>", self.pick_source)
         tk.Label(row, text="Done before:", bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="right", padx=6)
 
-        self.type_menu = tk.Menu(self.root, tearoff=False)
+        self.type_menu = DropMenu(self.root)
         for key in ys.TYPES:
             self.type_menu.add_command(label=f"Just {TYPE_LABELS[key].lower()}" if key != "shorts" else "Just Shorts",
                                        command=lambda k=key: self.slurp(only_type=k))
 
     def build_middle(self):
         mid = tk.Frame(self.root, bg=BG)
-        mid.pack(fill="both", expand=True, padx=12, pady=0)
-        panes = tk.PanedWindow(mid, orient="horizontal", bg=BG, sashwidth=10, bd=0, sashrelief="flat")
+        mid.pack(fill="both", expand=True)
+        panes = tk.PanedWindow(mid, orient="horizontal", bg=BG, sashwidth=6, bd=0, sashrelief="flat")
         panes.pack(fill="both", expand=True)
 
         left = card(panes)
@@ -969,7 +1345,7 @@ class App:
         self.line_starts = [0]
         self.text_search.entry.bind("<Shift-Return>", lambda e: self.step_match(-1))
         for sym, step in (("\u2039", -1), ("\u203a", 1)):
-            b = tk.Label(srow, text=sym, bg=CARD, fg=SLATE, font=(FONT, 16), cursor="hand2", padx=6)
+            b = tk.Label(srow, text=sym, bg=CARD, fg=TEXT, font=(FONT, 16), cursor="hand2", padx=6)
             b.pack(side="left")
             b.bind("<Button-1>", lambda e, s=step: self.step_match(s))
         self.match_label = tk.Label(srow, text="", bg=CARD, fg=MUTED, font=(FONT, 9), width=10)
@@ -985,11 +1361,11 @@ class App:
         self.replace_all_btn = RoundButton(self.edit_bar, "Replace all", self.replace_all, **small)
         self.undo_btn = RoundButton(self.edit_bar, "\u21b6", self.undo, **small)
         self.redo_btn = RoundButton(self.edit_bar, "\u21b7", self.redo, **small)
-        self.save_btn = RoundButton(self.edit_bar, "Saved", self.save_file, colour=GREEN, hover=GREEN_DARK,
+        self.save_btn = RoundButton(self.edit_bar, "Saved", self.save_file, colour=ACCENT, hover=ACCENT_DARK,
                                     width=62, height=26, bg=CARD, font=(FONT, 9, "bold"))
-        self.play_btn = RoundButton(self.edit_bar, "\u25b6 Play", self.play_wav, colour=BLUE, hover=BLUE_DARK, **small)
+        self.play_btn = RoundButton(self.edit_bar, "\u25b6 Play", self.play_wav, **small)
         self.stop_play_btn = RoundButton(self.edit_bar, "\u25a0 Stop", self.stop_wav, **small)
-        self.delete_btn = RoundButton(self.edit_bar, "Delete", self.delete_selected, colour=RED, hover=RED_DARK,
+        self.delete_btn = RoundButton(self.edit_bar, "Delete", self.delete_selected, fg=DANGER,
                                       **small)
 
         stack = tk.Frame(right, bg=CARD)
@@ -1011,17 +1387,17 @@ class App:
         for seq in ("<Control-s>", "<Control-S>"):
             self.root.bind_all(seq, lambda e: (self.save_file(), "break")[1])
         self.root.bind_all("<FocusIn>", self.focus_moved, add="+")
-        self.empty_hint = tk.Label(right, text="Select a file from the list to see it here.", bg=CARD, fg=MUTED,
+        self.empty_hint = tk.Label(right, text="Select a file from the list to see it here.", bg=FIELD, fg=MUTED,
                                    font=(FONT, 10))
         self.empty_hint.place(relx=0.5, rely=0.5, anchor="center")
         self.update_edit_buttons()
         panes.add(right, minsize=320)
 
     def text_area(self, parent, **kw):
-        frame = tk.Frame(parent, bg=CARD)
+        frame = tk.Frame(parent, bg=FIELD)
         frame.grid(row=0, column=0, sticky="nsew")
-        text = tk.Text(frame, wrap="word", width=20, font=(FONT, 10), padx=10, pady=8, relief="flat", bg=CARD,
-                       fg=TEXT, highlightthickness=0, selectbackground="#bbdefb", **kw)
+        text = tk.Text(frame, wrap="word", width=20, font=(FONT, 10), padx=10, pady=8, relief="flat", bg=FIELD,
+                       fg=TEXT, highlightthickness=0, selectbackground=SELECTED, **kw)
         text.tag_configure("match", background=MATCH_BG)
         text.tag_configure("current", background=CURRENT_BG)
         for tag, opts in (("h1", {"font": (FONT, 15, "bold"), "spacing3": 6}),
@@ -1029,8 +1405,8 @@ class App:
                           ("h3", {"font": (FONT, 11, "bold")}),
                           ("bold", {"font": (FONT, 10, "bold")}),
                           ("italic", {"font": (FONT, 10, "italic")}),
-                          ("code", {"font": ("Consolas", 10), "background": "#f1f1f1"}),
-                          ("link", {"foreground": BLUE, "underline": True}),
+                          ("code", {"font": ("Consolas", 10), "background": CARD}),
+                          ("link", {"foreground": LINK, "underline": True}),
                           ("bullet", {"lmargin1": 8, "lmargin2": 24}),
                           ("quote", {"lmargin1": 16, "lmargin2": 16, "foreground": MUTED}),
                           ("hr", {"foreground": BORDER})):
@@ -1044,22 +1420,27 @@ class App:
         return frame, text
 
     def build_bottom(self):
-        status = self.status_row = tk.Frame(self.root, bg=BG)
-        status.pack(side="bottom", fill="x", padx=14, pady=(0, 8))
-        self.status_label = tk.Label(status, text="", bg=BG, fg=MUTED, font=(FONT, 9), anchor="w", cursor="hand2")
+        status = self.status_row = tk.Frame(self.root, bg=MENU_BG)
+        status.pack(side="bottom", fill="x")
+        tk.Frame(status, bg=BORDER, height=1).pack(fill="x")
+        self.status_label = tk.Label(status, text="", bg=MENU_BG, pady=6, padx=12, fg=MUTED, font=(FONT, 9), anchor="w", cursor="hand2")
         self.status_label.pack(side="left", fill="x", expand=True)
         self.status_label.bind("<Button-1>", lambda e: self.show_log())
         self.bar = ttk.Progressbar(status, mode="determinate", length=220)
-        self.bar.pack(side="right")
+        self.bar.pack(side="right", padx=12)
 
-        btns = self.btn_row = tk.Frame(self.root, bg=BG)
-        btns.pack(side="bottom", fill="x", padx=12, pady=(8, 6))
+        btns = self.btn_row = tk.Frame(self.root, bg=CARD, padx=12, pady=8)
+        btns.pack(side="bottom", fill="x")
+        flow = FlowBar(btns)
+        flow.pack(fill="x")
+        buttons = []
         for text, cmd, colour, hover in (
                 ("Open results folder", self.open_results, SLATE, SLATE_DARK),
                 ("Open WAV folder", self.open_wavs, SLATE, SLATE_DARK),
-                ("Launch transcription app", self.launch_whisper, BLUE, BLUE_DARK),
+                ("Launch transcription app", self.launch_whisper, SLATE, SLATE_DARK),
                 ("Make Gemini Notebook files", self.make_gemini, SLATE, SLATE_DARK)):
-            RoundButton(btns, text, cmd, colour=colour, hover=hover).pack(side="left", padx=(0, 8))
+            buttons.append(RoundButton(flow, text, cmd, colour=colour, hover=hover, bg=CARD))
+        flow.show(buttons)
 
     # ----- status bar and log -----
 
@@ -1102,7 +1483,7 @@ class App:
             return
         name, folder, run = self._sources[idx]
         if run.get("url"):
-            self.url_var.set(run["url"])
+            self.url_box.set_links([run["url"]] if "\n" not in run["url"] else run["url"].split("\n"))
             self.list_file = ""
             self.list_label.configure(text="")
         self.show_folder(folder)
@@ -1112,7 +1493,7 @@ class App:
                                        filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
         if f:
             self.list_file = f
-            self.url_var.set("")
+            self.url_box.set_links([])
             self.list_label.configure(text=f"Using links from {Path(f).name} (paste a link to use that instead)")
 
     # ----- output list -----
@@ -1656,6 +2037,7 @@ class App:
         if self.busy():
             messagebox.showinfo(APP_NAME, "yt-slurp is already working. Wait for it to finish, or click Stop.")
             return
+        self.last_start = (argv, label, after)
         ys.PAUSE.clear()
         self.slurp_btn.set_enabled(False)
         self.pause_btn.set_text("Pause")
@@ -1675,34 +2057,53 @@ class App:
         self.worker.start()
 
     def slurp_menu(self, x, y):
-        self.type_menu.tk_popup(x, y)
+        self.type_menu.popup(x, y)
 
     def slurp(self, only_type: str | None = None):
-        url = self.url_var.get().strip()
-        if url:
+        links = self.url_box.get()
+        if links:
             self.list_file = ""
             self.list_label.configure(text="")
-        if not url and not self.list_file:
-            messagebox.showinfo(APP_NAME, "Paste a YouTube channel or playlist link first.")
+        if not links and not self.list_file:
+            messagebox.showinfo(APP_NAME, "Paste a YouTube channel, playlist or video link first.")
             self.url_box.entry.focus_set()
             return
-        if url:
+        kinds, urls, whole_channel = set(), [], False
+        for url in links:
             kind, _, note = ys.classify_url(url)
-            if kind == "video":
-                messagebox.showinfo(APP_NAME, "That is a link to a single video. yt-slurp works on whole "
-                                              "channels and playlists. To do one video, add it to a playlist "
-                                              "of its own (it can be unlisted) and paste the playlist link.")
-                return
             if kind == "unknown":
-                messagebox.showinfo(APP_NAME, f"That link doesn't look right: {note}.")
+                messagebox.showinfo(APP_NAME, f"This link doesn't look right: {note}.\n\n{url}")
                 return
-        if not any(self.settings[k] for k in ("make_transcripts", "make_wavs", "make_links")):
+            in_list = note.startswith(ys.VIDEO_IN_PLAYLIST)
+            if in_list:
+                # Copied while watching a playlist, so it could mean either
+                single = ys.classify_url(re.sub(r"([?&])list=[^&#]*&?", r"\1", url))
+                in_list = single[0] == "video"
+            if len(links) == 1 and (kind == "video" or in_list):
+                # Several video links plainly mean just those videos, so only a lone one is asked about
+                options = [("video", "Just this video"), ("channel", "The whole channel"), ("none", "Cancel")]
+                if in_list:
+                    options.insert(1, ("playlist", "The whole playlist"))
+                answer = ChoiceDialog(self.root, "What would you like to slurp?", options).result
+                if answer == "none":
+                    return
+                whole_channel = answer == "channel"
+                if in_list and answer != "playlist":
+                    kind, url, _ = single
+                if whole_channel:
+                    kind = "channel"
+            elif in_list:
+                kind, url, _ = single
+            kinds.add(kind)
+            urls.append(url)
+        if kinds != {"video"} and not any(self.settings[k] for k in ("make_transcripts", "make_wavs", "make_links")):
             messagebox.showinfo(APP_NAME, "Settings has Transcripts, WAV files and Links all turned off, "
                                           "so there is nothing to make.")
             return
         self.clear_items()
         self.write_log("")
-        self.start(build_argv(self.settings, url, self.list_file, only_type), "Starting...")
+        argv = build_argv(self.settings, urls, self.list_file, only_type)
+        self.start(argv + (["--whole-channel"] if whole_channel else []), "Starting...")
 
     def toggle_pause(self):
         if ys.PAUSE.is_set():
@@ -1735,6 +2136,21 @@ class App:
         self.refresh_sources()
         if after:
             after(code)
+        problem, self.last_problem = self.last_problem, None
+        if problem:
+            self.show_problem(*problem)
+
+    def show_problem(self, message, details):
+        answer = ChoiceDialog(self.root, message, [("retry", "Try again"), ("copy", "Copy details"),
+                                                   ("none", "Close")]).result
+        if answer == "retry" and self.last_start:
+            # The finished worker may need a moment to end
+            self.root.after(300, lambda: self.start(*self.last_start))
+        elif answer == "copy":
+            self.root.clipboard_clear()
+            self.root.clipboard_append(f"{message}\n\n{details}")
+            self.stage = "Details copied."
+            self.update_status()
 
     # ----- events from the worker -----
 
@@ -1782,6 +2198,10 @@ class App:
                 reply["event"].set()
                 self.stage = before
                 self.update_status()
+        elif kind == "tools_checked":
+            self.offer_tools(msg[1])
+        elif kind == "problem":
+            self.last_problem = msg[1:]
         elif kind == "done":
             self.finished(msg[1], msg[2])
         elif kind == "setup":
@@ -1805,8 +2225,8 @@ class App:
             self.update_btn.set_enabled(True)
             if msg[1]:
                 self.stage = "Setup did not finish."
-                messagebox.showerror(APP_NAME, f"{msg[1]}\n\nCheck your internet connection and restart "
-                                               "yt-slurp to try again.")
+                messagebox.showerror(APP_NAME, f"{msg[1]}\n\nCheck your internet connection. "
+                                               "yt-slurp will try again when you click Slurp.")
             else:
                 self.stage = "Ready."
             self.update_status()
@@ -1822,6 +2242,8 @@ class App:
             return ChoiceDialog(self.root, question, options).result
         if akind == "confirm_delete":
             return messagebox.askyesno(APP_NAME, data[0] + "\n\nDelete them?", icon="warning", default="no")
+        if akind == "many":
+            return ManyDialog(self.root, data[0]).result
         if akind == "types":
             return TypesDialog(self.root, data[0]).result
         return None
@@ -1916,9 +2338,13 @@ class App:
     # ----- first-run setup and updates -----
 
     def check_tools(self):
-        setup.use_tools()
-        missing = setup.missing_tools()
-        if not missing:
+        def work():  # starting each tool to test it can take seconds
+            setup.use_tools()
+            self.events.put(("tools_checked", setup.missing_tools()))
+        threading.Thread(target=work, daemon=True).start()
+
+    def offer_tools(self, missing):
+        if not missing or self.busy():  # a slurp already under way sets them up itself
             return
         names = {"ffmpeg": "ffmpeg (makes audio files for videos without captions)",
                  "deno": "Deno (yt-dlp needs it to read YouTube)"}
@@ -1928,11 +2354,11 @@ class App:
             return
         if not messagebox.askyesno(
                 "Finish setting up yt-slurp",
-                "yt-slurp needs two free tools that aren't on this computer yet:\n\n"
+                "yt-slurp needs these free tools, which are missing or not working on this computer:\n\n"
                 + "\n".join(f"\u2022 {names[m]}" for m in missing)
                 + "\n\nDownload them now? This happens once and needs no admin rights. They go in "
                   "yt-slurp's own folder. On a slow connection it can take 15 minutes or more."):
-            self.stage = "ffmpeg or Deno is missing. Restart yt-slurp to install them."
+            self.stage = "ffmpeg or Deno is missing. yt-slurp will download it when you click Slurp."
             self.update_status()
             return
         self.slurp_btn.set_enabled(False)
@@ -1963,7 +2389,7 @@ class App:
         self.update_info = info
         if info:
             self.update_btn.set_text(f"Update to {info['version']}")
-            self.update_btn.pack(side="right", padx=8, pady=3)
+            self.update_btn.pack(side="left")
         elif not quiet:
             messagebox.showinfo(APP_NAME, f"You have the latest version, {ys.__version__}.")
 
@@ -2023,7 +2449,7 @@ class App:
     def welcome(self):
         messagebox.showinfo(
             "How to use yt-slurp",
-            "1. Paste a YouTube channel or playlist link at the top and click Slurp. The arrow on the right of "
+            "1. Paste one or more YouTube channel, playlist or video links at the top and click Slurp. Each link becomes a block you can click to edit, or remove with its ×. The arrow on the right of "
             "Slurp lets you do just normal videos, just Shorts or just live streams.\n\n"
             "2. Questions pop up when yt-slurp needs an answer.\n\n"
             "3. Results appear on the left as they are made: transcripts, WAV files, links and skipped "
@@ -2034,7 +2460,7 @@ class App:
             "merges them by itself.\n\n"
             "5. Add the transcripts to Claude or ChatGPT as they are. For Gemini Notebook, which limits how many "
             "sources a notebook can hold, click Make Gemini Notebook files to bundle them.\n\n"
-            "Settings is in the menu bar.")
+            "Settings is the cog at the top right. Tools and Help are the wrench and ? beside it.")
         self.settings["welcomed"] = True
         save_settings(self.settings)
 
@@ -2058,18 +2484,251 @@ class App:
 # Dialogs
 # =============================================================================
 
+def window_handle(win) -> int:
+    import ctypes
+    from ctypes import wintypes
+    get = ctypes.windll.user32.GetParent
+    get.argtypes, get.restype = [wintypes.HWND], wintypes.HWND
+    return get(win.winfo_id())
+
+
+def dark_title_bar(win) -> None:
+    """Windows' own title bar in the panel colour (Windows 11), or plain dark (Windows 10)."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        win.update_idletasks()
+        hwnd = wintypes.HWND(window_handle(win))
+
+        def bgr(colour):
+            r, g, b = (int(colour[i:i + 2], 16) for i in (1, 3, 5))
+            return b << 16 | g << 8 | r
+        # dark mode, border colour, caption colour, caption text
+        for attr, value in ((20, 1), (34, bgr(BORDER)), (35, bgr(CARD)), (36, bgr(TEXT))):
+            v = ctypes.c_int(value)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v), 4)
+    except (AttributeError, OSError, tk.TclError):
+        pass
+
+
+SNAP_FRAME = 7  # the invisible resize border, which hangs outside the visible window
+
+
+def snap_fix(window, work, pointer):
+    """Where a snapped window should be if it landed outside the screen it was
+    dropped on (work is that screen without its taskbar), or None if it is fine."""
+    left, top, right, bottom = work
+    slack = 24
+    if (window[0] >= left - slack and window[1] >= top - slack and window[2] <= right + slack
+            and window[3] <= bottom + slack):
+        return None
+    mid_x, mid_y = (left + right) // 2, (top + bottom) // 2
+    x1, x2 = (left, mid_x) if pointer[0] < mid_x else (mid_x, right)
+    # Dropped in a corner means a quarter of the screen
+    corner = (bottom - top) // 12
+    y1, y2 = (top, mid_y) if pointer[1] < top + corner else (mid_y, bottom) if pointer[1] > bottom - corner \
+        else (top, bottom)
+    # A left edge even slightly on the next screen would be scaled as if it were all there
+    return max(left, x1 - SNAP_FRAME), y1, x2 + SNAP_FRAME, y2 + SNAP_FRAME
+
+
+class TitleBar(tk.Frame):
+    """A slim title bar for the main window, in place of Windows' own."""
+
+    HEIGHT = 30
+
+    def __init__(self, root, icon):
+        super().__init__(root, bg=CARD, height=self.HEIGHT)
+        self.root = root
+        self.old_proc = 0
+        self.pack_propagate(False)
+        grips = [self]
+        if icon is not None:
+            self.icon = icon.subsample(max(1, icon.width() // 18))
+            grips.append(tk.Label(self, image=self.icon, bg=CARD))
+            grips[-1].pack(side="left", padx=(10, 6))
+        grips.append(tk.Label(self, text=APP_NAME, bg=CARD, fg=TEXT, font=(FONT, 9)))
+        grips[-1].pack(side="left", padx=(0 if icon is not None else 10, 0))
+        for w in grips:
+            w.bind("<Button-1>", self.drag)
+            w.bind("<Double-Button-1>", lambda e: self.toggle())
+            w.bind("<Motion>", lambda e: e.widget.configure(cursor="size_ns" if self.on_top_edge(e) else ""))
+        families = tkfont.families(root)
+        font = next((f for f in ("Segoe Fluent Icons", "Segoe MDL2 Assets") if f in families), None)
+        self.buttons = {}
+        for name, icon_char, plain, command in (
+                ("Close", "\ue8bb", "\u00d7", self.close), ("Maximise", "\ue922", "\u25a1", self.toggle),
+                ("Minimise", "\ue921", "\u2013", root.iconify)):
+            b = tk.Label(self, text=icon_char if font else plain, bg=CARD, fg=TEXT, width=5,
+                         font=(font, 8) if font else (FONT, 10))
+            b.pack(side="right", fill="y")
+            hover = ACCENT if name == "Close" else SLATE
+            b.bind("<Enter>", lambda e, h=hover: e.widget.configure(bg=h))
+            b.bind("<Leave>", lambda e: e.widget.configure(bg=CARD))
+            b.bind("<ButtonRelease-1>", lambda e, run=command: run()
+                   if 0 <= e.x < e.widget.winfo_width() and 0 <= e.y < e.widget.winfo_height() else None)
+            self.buttons[name] = b
+        self.glyphs = ("\ue922", "\ue923") if font else ("\u25a1", "\u2750")
+        root.bind("<Map>", lambda e: e.widget is root and self.strip(), add="+")
+        root.bind("<Configure>", lambda e: e.widget is root and self.show_state(), add="+")
+
+    def strip(self):
+        """Hide Windows' caption by giving its space to the window. The caption
+        style stays, so Windows still animates, snaps and maximises as usual."""
+        if self.old_proc:
+            return
+        import ctypes
+        from ctypes import wintypes as w
+        u = self.user32 = ctypes.WinDLL("user32")  # own copy, so these types affect nothing else
+        ptr = ctypes.c_ssize_t
+        u.GetWindowLongPtrW.argtypes, u.GetWindowLongPtrW.restype = [w.HWND, ctypes.c_int], ptr
+        u.SetWindowLongPtrW.argtypes, u.SetWindowLongPtrW.restype = [w.HWND, ctypes.c_int, ptr], ptr
+        u.CallWindowProcW.argtypes, u.CallWindowProcW.restype = [ptr, w.HWND, ctypes.c_uint, w.WPARAM, w.LPARAM], ptr
+        u.SetWindowPos.argtypes = [w.HWND, w.HWND] + [ctypes.c_int] * 4 + [ctypes.c_uint]
+        u.PostMessageW.argtypes = [w.HWND, ctypes.c_uint, w.WPARAM, w.LPARAM]
+        u.IsZoomed.argtypes = [w.HWND]
+        hwnd = self.hwnd = window_handle(self.root)
+        old = u.GetWindowLongPtrW(hwnd, -4)  # GWLP_WNDPROC
+
+        @ctypes.WINFUNCTYPE(ptr, w.HWND, ctypes.c_uint, w.WPARAM, w.LPARAM)
+        def proc(h, msg, wp, lp):
+            if msg != 0x83 or not wp:  # WM_NCCALCSIZE
+                return u.CallWindowProcW(old, h, msg, wp, lp)
+            rect = w.RECT.from_address(lp)
+            top = rect.top
+            u.CallWindowProcW(old, h, msg, wp, lp)
+            # Maximised windows hang over the screen edge by the frame's width
+            rect.top = top + (u.GetSystemMetrics(33) + u.GetSystemMetrics(92) if u.IsZoomed(h) else 0)
+            return 0
+        self.proc, self.old_proc = proc, old  # kept, or Windows would call freed memory
+        u.SetWindowLongPtrW(hwnd, -4, ctypes.cast(proc, ctypes.c_void_p).value)
+        u.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x37)  # same place and size, frame changed
+        self.bind("<Destroy>", lambda e: e.widget is self and self.unstrip())
+
+    def unstrip(self):
+        if self.old_proc:
+            self.user32.SetWindowLongPtrW(self.hwnd, -4, self.old_proc)
+            self.old_proc = 0
+
+    def on_top_edge(self, e) -> bool:
+        return e.y_root - self.winfo_rooty() < 5 and self.root.state() != "zoomed"
+
+    def drag(self, e):
+        """Hand the drag to Windows, so snapping works. Posted, not sent: a
+        sent one would run Windows' move loop inside this callback."""
+        if self.old_proc:
+            self.user32.ReleaseCapture()
+            # WM_NCLBUTTONDOWN on HTTOP (resize) or HTCAPTION (move)
+            self.user32.PostMessageW(self.hwnd, 0xA1, 12 if self.on_top_edge(e) else 2,
+                                     (e.y_root & 0xFFFF) << 16 | (e.x_root & 0xFFFF))
+            if not self.on_top_edge(e):
+                self.after(150, self.after_drag)
+
+    def after_drag(self):
+        if self.user32.GetAsyncKeyState(2 if self.user32.GetSystemMetrics(23) else 1) & 0x8000:  # still held
+            self.after(150, self.after_drag)
+        else:
+            self.after(350, self.fix_snap)  # once Windows has finished moving it
+
+    def fix_snap(self):
+        """Windows misplaces a window snapped on a screen whose scaling differs
+        from the one most of the window was on. Put it where it was dropped."""
+        import ctypes
+        from ctypes import wintypes as w
+        u = self.user32
+        if not hasattr(u, "SetThreadDpiAwarenessContext") or not hasattr(u, "IsWindowArranged"):
+            return  # too old for this
+        u.IsWindowArranged.argtypes = [w.HWND]
+        u.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        u.GetWindowRect.argtypes = [w.HWND, ctypes.POINTER(w.RECT)]
+        u.MonitorFromPoint.argtypes, u.MonitorFromPoint.restype = [w.POINT, w.DWORD], w.HMONITOR
+        u.GetMonitorInfoW.argtypes = [w.HMONITOR, ctypes.c_void_p]
+        if not u.IsWindowArranged(self.hwnd):
+            return
+        before = u.SetThreadDpiAwarenessContext(-4)  # real pixels on every screen
+        try:
+            p, r, info = w.POINT(), w.RECT(), (w.DWORD * 10)(40)
+            u.GetCursorPos(ctypes.byref(p))
+            u.GetWindowRect(self.hwnd, ctypes.byref(r))
+            u.GetMonitorInfoW(u.MonitorFromPoint(p, 2), info)
+            fix = snap_fix((r.left, r.top, r.right, r.bottom), tuple(ctypes.c_int32(v).value for v in info[5:9]),
+                           (p.x, p.y))
+            if fix:
+                u.SetWindowPos(self.hwnd, None, fix[0], fix[1], fix[2] - fix[0], fix[3] - fix[1], 0x14)
+        finally:
+            u.SetThreadDpiAwarenessContext(before)
+
+    def toggle(self):
+        self.root.state("normal" if self.root.state() == "zoomed" else "zoomed")
+
+    def show_state(self):
+        self.buttons["Maximise"].configure(text=self.glyphs[self.root.state() == "zoomed"])
+
+    def close(self):
+        self.root.tk.call(*self.root.tk.splitlist(self.root.protocol("WM_DELETE_WINDOW")))
+
+
+class DarkMessageBox:
+    """tkinter's messagebox calls, drawn in yt-slurp's colours."""
+
+    def _ask(self, title, message, buttons, default, closed):
+        """buttons: (label, value), main one first. closed: the answer if it is closed."""
+        root = tk._default_root
+        grabbed = root.grab_current()
+        parent = grabbed.winfo_toplevel() if grabbed else root
+        result = [closed]
+        top, frame = modal(parent, title)
+        tk.Label(frame, text=message, wraplength=460, bg=CARD, fg=TEXT, font=(FONT, 10), justify="left").pack(
+            anchor="w", pady=(0, 16))
+        row = tk.Frame(frame, bg=CARD)
+        row.pack(fill="x")
+
+        def pick(value):
+            result[0] = value
+            top.destroy()
+        for label, value in reversed(buttons):
+            main = value == default
+            b = RoundButton(row, label, lambda v=value: pick(v), width=96, bg=CARD,
+                            colour=ACCENT if main else SLATE, hover=ACCENT_DARK if main else SLATE_DARK)
+            b.pack(side="right", padx=(8, 0))
+            if main:
+                b.focus_set()
+        top.bind("<Escape>", lambda e: top.destroy())
+        top.grab_set()
+        top.lift()
+        parent.wait_window(top)
+        if grabbed and grabbed.winfo_exists():
+            grabbed.grab_set()
+        return result[0]
+
+    def showinfo(self, title, message, **_):
+        self._ask(title, message, [("OK", True)], True, True)
+
+    showwarning = showerror = showinfo
+
+    def askyesno(self, title, message, default="yes", **_):
+        return self._ask(title, message, [("Yes", True), ("No", False)], default != "no", False)
+
+    def askyesnocancel(self, title, message, **_):
+        return self._ask(title, message, [("Yes", True), ("No", False), ("Cancel", None)], True, None)
+
+
+messagebox = DarkMessageBox()
+
+
 def modal(parent, title) -> tuple[tk.Toplevel, tk.Frame]:
     top = tk.Toplevel(parent)
     top.title(title)
-    top.configure(bg=SHADOW)
+    top.configure(bg=BORDER)
+    dark_title_bar(top)
+    top.bind("<Map>", lambda e: e.widget is top and dark_title_bar(top))
     top.transient(parent)
     top.resizable(False, False)
-    # A fine border with a soft shadow below and to the right, drawn as two
-    # graded edges; Windows adds its own drop shadow around the whole window.
-    edge = tk.Frame(top, bg=SHADOW_SOFT)
-    edge.pack(fill="both", expand=True, padx=(0, 0), pady=(0, 0))
-    border = tk.Frame(edge, bg=CARD, highlightthickness=1, highlightbackground=BORDER_FINE)
-    border.pack(fill="both", expand=True, padx=(0, 2), pady=(0, 2))
+    border = tk.Frame(top, bg=CARD)
+    border.pack(fill="both", expand=True, padx=1, pady=1)
     frame = tk.Frame(border, bg=CARD)
     frame.pack(fill="both", expand=True, padx=22, pady=18)
     top.after_idle(lambda: centre_over(top, parent))
@@ -2136,6 +2795,7 @@ class SettingsDialog:
         number(left, "min_minutes", "Skip videos shorter than", "minutes", 0, 600)
         check(left, "test_run", "Test run: only do the first few videos")
         number(left, "limit", "How many in a test run:", "", 1, 1000)
+        number(left, "warn_over", "Warn me if there are more than", "videos (0 = never)", 0, 100_000)
 
         heading(left, "What to make")
         check(left, "make_transcripts", "Transcripts (from captions)")
@@ -2184,7 +2844,7 @@ class SettingsDialog:
 
         btns = tk.Frame(frame, bg=CARD)
         btns.pack(fill="x", pady=(18, 0))
-        RoundButton(btns, "Save", self.save, colour=GREEN, hover=GREEN_DARK, width=100, bg=CARD).pack(side="right")
+        RoundButton(btns, "Save", self.save, colour=ACCENT, hover=ACCENT_DARK, width=100, bg=CARD).pack(side="right")
         RoundButton(btns, "Cancel", top.destroy, width=100, bg=CARD).pack(side="right", padx=8)
         self.toggle_types()
         top.grab_set()
@@ -2218,9 +2878,9 @@ class SettingsDialog:
                     val = int(val) if val == int(val) else val
                 except ValueError:
                     val = DEFAULT_SETTINGS[key]
-            elif key in ("limit", "max_sources", "max_source_words"):
+            elif key in ("limit", "max_sources", "max_source_words", "warn_over"):
                 try:
-                    val = max(1, int(float(val)))
+                    val = max(0 if key == "warn_over" else 1, int(float(val)))
                 except ValueError:
                     val = DEFAULT_SETTINGS[key]
             s[key] = val
@@ -2248,7 +2908,7 @@ class LogWindow:
         self.top = top
         textf = tk.Frame(frame, bg=CARD)
         textf.pack(fill="both", expand=True)
-        self.text = tk.Text(textf, wrap="word", font=("Consolas", 9), relief="flat", bg="#f7f7f7", fg=TEXT,
+        self.text = tk.Text(textf, wrap="word", font=("Consolas", 9), relief="flat", bg=FIELD, fg=TEXT,
                             padx=8, pady=6, highlightthickness=0)
         sb = ttk.Scrollbar(textf, orient="vertical", command=self.text.yview, style="Slim.Vertical.TScrollbar")
         self.text.configure(yscrollcommand=sb.set)
@@ -2330,7 +2990,7 @@ class ChoiceDialog:
         tk.Label(frame, text=question, wraplength=420, bg=CARD, fg=TEXT, font=(FONT, 10), justify="left").pack(
             anchor="w", pady=(0, 12))
         for i, (key, label) in enumerate(options):
-            colour, hover = (GREEN, GREEN_DARK) if i == 0 else (SLATE, SLATE_DARK)
+            colour, hover = (ACCENT, ACCENT_DARK) if i == 0 else (SLATE, SLATE_DARK)
             RoundButton(frame, label, lambda k=key: self.pick(k), colour=colour, hover=hover, width=420,
                         bg=CARD).pack(pady=3)
         top.protocol("WM_DELETE_WINDOW", top.destroy)
@@ -2340,6 +3000,78 @@ class ChoiceDialog:
 
     def pick(self, key):
         self.result = key
+        self.top.destroy()
+
+
+class ManyDialog:
+    """A long run: what is queued, longest first, with × to leave one out.
+    Closing it cancels. result: the names left out, or None."""
+
+    VISIBLE = 9  # rows before it scrolls
+
+    def __init__(self, parent, groups):
+        self.result = None
+        self.groups, self.out = groups, set()
+        top, frame = modal(parent, APP_NAME)
+        self.top = top
+        self.head = tk.Label(frame, bg=CARD, fg=TEXT, font=(FONT, 11, "bold"), wraplength=480, justify="left")
+        self.head.pack(anchor="w")
+        if len(groups) > 1:
+            tk.Label(frame, text="Use × to leave one out.", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(
+                anchor="w", pady=(4, 10))
+            box = tk.Frame(frame, bg=FIELD, highlightthickness=1, highlightbackground=BORDER)
+            box.pack(fill="x")
+            row_h = tkfont.Font(font=(FONT, 10)).metrics("linespace") + 16
+            c = self.canvas = tk.Canvas(box, bg=FIELD, highlightthickness=0, width=480, yscrollincrement=row_h,
+                                        height=min(len(groups), self.VISIBLE) * row_h)
+            if len(groups) > self.VISIBLE:
+                sb = ttk.Scrollbar(box, orient="vertical", command=c.yview, style="Slim.Vertical.TScrollbar")
+                c.configure(yscrollcommand=sb.set, scrollregion=(0, 0, 480, len(groups) * row_h))
+                sb.pack(side="right", fill="y")
+                top.bind("<MouseWheel>", lambda e: c.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+            c.pack(side="left")
+            self.rows = {}
+            for i, (name, n) in enumerate(groups):
+                f = tk.Frame(c, bg=FIELD)
+                x = tk.Label(f, bg=FIELD, fg=TEXT, font=(FONT, 10), width=8, cursor="hand2", takefocus=1,
+                             highlightthickness=1, highlightbackground=FIELD, highlightcolor=FOCUS)
+                x.pack(side="right", padx=4)
+                count = tk.Label(f, text=f"{n:,}", bg=FIELD, fg=MUTED, font=(FONT, 10))
+                count.pack(side="right", padx=8)
+                label = tk.Label(f, text=name if len(name) <= 44 else name[:43] + "\u2026", bg=FIELD, anchor="w")
+                label.pack(side="left", padx=10)
+                for key in ("<Button-1>", "<Return>", "<space>"):
+                    x.bind(key, lambda e, name=name: (self.toggle(name), "break")[-1])
+                x.bind("<FocusIn>", lambda e, i=i: c.yview_moveto(max(0, i - self.VISIBLE + 2) / len(groups)))
+                c.create_window(0, i * row_h, window=f, anchor="nw", width=480, height=row_h)
+                self.rows[name] = (label, x)
+        row = tk.Frame(frame, bg=CARD)
+        row.pack(fill="x", pady=(16, 0))
+        self.go = RoundButton(row, "Get all", self.ok, colour=ACCENT, hover=ACCENT_DARK, width=170, bg=CARD)
+        self.go.pack(side="right")
+        RoundButton(row, "Cancel", top.destroy, width=96, bg=CARD).pack(side="right", padx=8)
+        self.show()
+        top.bind("<Escape>", lambda e: top.destroy())
+        top.grab_set()
+        top.lift()
+        parent.wait_window(top)
+
+    def toggle(self, name):
+        self.out ^= {name}
+        self.show()
+
+    def show(self):
+        total = sum(n for name, n in self.groups if name not in self.out)
+        self.head.configure(text=ys.long_run_text(total))
+        self.go.set_text(f"Get {total:,} video{'' if total == 1 else 's'}")
+        self.go.set_enabled(total > 0)
+        for name, (label, x) in getattr(self, "rows", {}).items():
+            out = name in self.out
+            label.configure(fg=MUTED if out else TEXT, font=(FONT, 10, "overstrike") if out else (FONT, 10))
+            x.configure(text="Put back" if out else "×", fg=LINK if out else TEXT)
+
+    def ok(self):
+        self.result = set(self.out)
         self.top.destroy()
 
 
@@ -2368,7 +3100,7 @@ class TypesDialog:
                 ttk.Checkbutton(frame, text=f"{TYPE_LABELS[t]} ({totals[t]})", variable=v).pack(anchor="w", pady=3)
         row = tk.Frame(frame, bg=CARD)
         row.pack(fill="x", pady=(14, 0))
-        RoundButton(row, "Carry on", self.ok, colour=GREEN, hover=GREEN_DARK, width=110, bg=CARD).pack(side="right")
+        RoundButton(row, "Carry on", self.ok, colour=ACCENT, hover=ACCENT_DARK, width=110, bg=CARD).pack(side="right")
         RoundButton(row, "All of them", self.all, width=110, bg=CARD).pack(side="right", padx=8)
         top.protocol("WM_DELETE_WINDOW", self.ok)
         top.grab_set()
@@ -2422,7 +3154,7 @@ def report_crash(exc_type, exc, tb) -> None:
     except OSError:
         pass
     try:
-        if messagebox.askyesno(
+        if system_messagebox.askyesno(  # plain, in case drawing is what failed
                 APP_NAME,
                 f"Something went wrong: {exc}\n\n"
                 f"yt-slurp has saved the details to:\n{log}\n\n"

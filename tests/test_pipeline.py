@@ -53,7 +53,8 @@ class FakeNet:
         if vid == "members0004" and not self.browser:
             raise RuntimeError("ERROR: [youtube] members0004: Join this channel to get access to members-only content")
         v = dict(VIDEOS[vid])
-        v.update(id=vid, channel="Test Channel", live_status="not_live")
+        v.update(id=vid, channel="Test Channel", live_status="not_live", channel_id="UCtest",
+                 uploader_url="https://www.youtube.com/@test")
         return v
 
     def fetch_text(self, url):
@@ -154,8 +155,98 @@ def test_links_only_and_fresh_keeps_whisper(fake, monkeypatch):
     assert ys.Manifest(folder / "manifest.csv").get("capt0000001")["status"] == "transcript"
 
 
-def test_single_video_rejected(fake):
-    assert ys.main(["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]) == 2
+def test_mixed_links_each_go_to_their_own_place(fake, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt="": "none")
+    assert run("https://youtu.be/capt0000001", "https://www.youtube.com/@test/featured", "https://vimeo.com/1") == 0
+    out = fake / "output"
+    assert [d.name for d in out.iterdir()] == ["Test Channel"]  # the video shares its channel's folder
+    names = [p.name for p in (out / "Test Channel" / "transcripts").iterdir()]
+    assert len(names) == 1  # and is done once
+    assert (out / "Test Channel" / "links.txt").exists()
+
+
+OTHER = "capt0000009"
+
+
+@pytest.fixture
+def two_channels(fake, monkeypatch):
+    class Net2(FakeNet):
+        def video_info(self, vid):
+            if vid != OTHER:
+                return super().video_info(vid)
+            return {**VIDEOS["capt0000001"], "id": OTHER, "title": "Other", "channel": "Second", "channel_id": "UC2",
+                    "live_status": "not_live", "uploader_url": "https://www.youtube.com/@second"}
+    monkeypatch.setattr(ys, "Net", Net2)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "none")
+    return fake / "output"
+
+
+def test_separate_folders_by_channel(two_channels):
+    urls = [ys.watch_url(v) for v in (OTHER, "capt0000001", "short000005")]
+    assert ys.main([*urls, "--no-wavs", "--separate"]) == 0
+    assert sorted(d.name for d in two_channels.iterdir()) == ["Second", "Test Channel"]
+    assert not list(two_channels.rglob("links.txt"))
+
+
+def test_several_links_share_a_folder_in_any_order(two_channels, monkeypatch):
+    links = ["https://www.youtube.com/@test", ys.watch_url(OTHER), ys.watch_url("short000005")]
+    opts = ["--min-minutes", "2", "--no-wavs"]
+    assert ys.main([*links, *opts]) == 0
+    folder, = two_channels.iterdir()
+    assert folder.name == "Second and Test Channel"
+    folder = folder.rename(folder.with_name("My research"))
+    asked = []
+
+    def answer(mode):
+        def choose(q, options):
+            if "slurped together before" in q:
+                asked.append(q)
+                return mode
+            return "none"
+        monkeypatch.setattr(ys.UI, "choose", choose)
+    answer("update")
+    kept = {p: p.stat().st_mtime_ns for p in (folder / "transcripts").iterdir()}
+    assert ys.main([*reversed(links), *opts]) == 0  # same folder though renamed
+    assert len(asked) == 1 and "My research" in asked[0]
+    assert {p: p.stat().st_mtime_ns for p in (folder / "transcripts").iterdir()} == kept
+    answer("fresh")
+    (folder / "old.txt").write_text("x")
+    monkeypatch.setattr(ys.UI, "confirm_delete", lambda m: True)
+    assert ys.main([*links, *opts]) == 0
+    assert len(asked) == 2 and not (folder / "old.txt").exists()
+    assert list(two_channels.iterdir()) == [folder]
+    assert len(list((folder / "transcripts").iterdir())) == 2
+    assert ys.Manifest(folder / "manifest.csv").get("short000005")["status"] == "no-captions"  # not skipped-short
+    assert (folder / "links.txt").exists()
+    assert ys.main([*links[:2], *opts]) == 0  # a different set of links is a different folder
+    assert len(list(two_channels.iterdir())) == 2
+
+
+def test_several_links_for_one_channel_use_its_folder(two_channels):
+    assert ys.main([ys.watch_url("capt0000001"), ys.watch_url("short000005"), "--no-wavs"]) == 0
+    assert [d.name for d in two_channels.iterdir()] == ["Test Channel"]
+
+
+def test_combined_name():
+    assert ys.combined_name(["b", "A", "b"]) == "A and b"
+    assert ys.combined_name(["c", "b", "a"]) == "a, b and c"
+    assert ys.combined_name([f"Channel number {i}" for i in range(9)]) == \
+        "Channel number 0, Channel number 1 and more"
+    for names in (["x" * 200, "y"], [f"Name {i}" for i in range(200)]):
+        name = ys.combined_name(names)
+        assert len(name) <= ys.MAX_COMBINED_NAME_LEN and name.endswith(" and more")
+
+
+def test_whole_channel_from_a_video(two_channels):
+    assert ys.main([ys.watch_url("capt0000001"), "--whole-channel", "--no-wavs"]) == 0
+    assert len(ys.Manifest(two_channels / "Test Channel" / "manifest.csv").rows) == len(VIDEOS)
+
+
+def test_channel_after_one_of_its_videos(two_channels):
+    assert ys.main([ys.watch_url("capt0000001")]) == 0
+    assert run("--no-wavs") == 0  # no "start again?" question for one video
+    m = ys.Manifest(two_channels / "Test Channel" / "manifest.csv")
+    assert len(m.rows) == len(VIDEOS) and m.get("capt0000001")["status"] == "transcript"
 
 
 def test_no_wavs_records_no_captions_and_pace(fake, monkeypatch):
@@ -206,3 +297,81 @@ def test_migrate_names_from_older_versions(tmp_path):
 def test_gemini_command_needs_transcripts(fake):
     (fake / "empty").mkdir()
     assert ys.main(["gemini", str(fake / "empty")]) == 2
+
+
+def test_warning_lists_channels_and_can_leave_some_out(two_channels, monkeypatch):
+    seen = []
+    monkeypatch.setattr(ys.UI, "confirm_many", lambda groups: (seen.append(groups), {"Second"})[1], raising=False)
+    for extra in ([], ["--separate"]):
+        assert run(ys.watch_url(OTHER), "--no-wavs", "--warn-over", "2", *extra) == 0
+    assert seen == [[("Test Channel", 4), ("Second", 1)]] * 2  # longest first
+    assert not [p for p in two_channels.rglob("*.md") if OTHER in p.name]
+
+
+@pytest.mark.parametrize("answer,code", [("none", 2), ("yes", 0)])
+def test_warns_before_many_videos(fake, monkeypatch, answer, code):
+    asked = []
+    monkeypatch.setattr(ys.UI, "choose", lambda q, o: (asked.append(q), answer if "videos to get" in q else "none")[1])
+    assert run("--no-wavs", "--warn-over", "3") == code
+    assert "4 videos" in asked[0]  # the short one is not counted
+    assert (fake / "output" / "Test Channel").exists() == (code == 0)
+    asked.clear()
+    assert run("--no-wavs", "--warn-over", "4", "--update") == 0
+    assert not [q for q in asked if "videos to get" in q]
+
+
+# ----- nothing is lost by mistake -----
+
+@pytest.mark.parametrize("extra", [[], ["https://youtu.be/capt0000009"]])
+def test_cancelling_after_start_again_keeps_everything(two_channels, monkeypatch, extra):
+    assert run("--no-wavs", *extra) == 0
+    before = sorted(p for p in two_channels.rglob("*") if p.is_file())
+    monkeypatch.setattr(ys.UI, "confirm_delete", lambda m: True)
+    monkeypatch.setattr(ys.UI, "confirm_many", lambda groups: None, raising=False)
+    assert run("--no-wavs", "--fresh", "--warn-over", "1", *extra) == 2
+    assert sorted(p for p in two_channels.rglob("*") if p.is_file()) == before
+    assert run("--no-wavs", "--fresh", *extra) == 0  # and confirming does start again
+    assert list(two_channels.rglob("*.md"))
+
+
+def test_start_again_is_refused_when_a_link_cannot_be_read(two_channels, monkeypatch):
+    links = ["https://www.youtube.com/@test", ys.watch_url(OTHER)]
+    assert ys.main([*links, "--no-wavs"]) == 0
+    kept = sorted(two_channels.rglob("*.md"))
+    base = ys.Net
+
+    class Down(base):
+        def video_info(self, vid):
+            if vid == OTHER:
+                raise RuntimeError("HTTP Error 404")
+            return super().video_info(vid)
+    monkeypatch.setattr(ys, "Net", Down)
+    monkeypatch.setattr(ys.UI, "confirm_delete", lambda m: True)
+    assert ys.main([*links, "--no-wavs", "--fresh"]) == 2
+    assert sorted(two_channels.rglob("*.md")) == kept
+
+
+def test_folders_are_never_shared_by_different_sources(tmp_path):
+    for name in ("x" * 60, "word " * 12, "\u4f60\u597d"):
+        seen = set()
+        for n in range(4):
+            src = ys.Source(url=f"https://u/{n}", kind="playlist", name=name, source_id="PL" + str(n) * 32 if n else "")
+            folder = ys.choose_folder(src, tmp_path, set())
+            assert folder not in seen
+            seen.add(folder)
+            folder.mkdir(exist_ok=True)
+            (folder / "run.json").write_text(json.dumps({"url": src.url, "source_id": src.source_id}))
+            assert ys.choose_folder(src, tmp_path, set()) == folder  # and found again
+
+
+@pytest.mark.parametrize("text", ["[]", "null", "5", '"s"', '{"url": 5}', "{", pytest.param("[" * 100000, id="nested")])
+def test_damaged_run_json_is_ignored(tmp_path, text):
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "run.json").write_text(text)
+    assert ys.load_run(tmp_path / "d") == {}
+    assert ys.folder_for_links(tmp_path, "x") is None
+
+
+def test_whole_channel_does_every_videos_channel(two_channels):
+    found = ys.resolve_videos(["capt0000001", OTHER, "short000005"], ys.Net(), whole_channel=True)
+    assert [s.url for s in found] == ["https://www.youtube.com/@test", "https://www.youtube.com/@second"]

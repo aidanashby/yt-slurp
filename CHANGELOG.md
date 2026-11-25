@@ -2,6 +2,28 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
+## 0.2.5 (unreleased)
+
+### Added
+- yt-slurp keeps yt-dlp up to date by itself, without a new yt-slurp release. It checks PyPI once a day when a slurp starts, skips releases under 48 hours old (except to repair a failure), verifies the download's checksum, tests it separately, and keeps the previous copy if the new one doesn't work.
+- When YouTube changes mid-slurp, yt-slurp updates yt-dlp, replaces Deno if needed, and retries the video without stopping.
+- Links to single videos. The transcript goes in its channel's folder, whatever the video's length, with no `links.txt`. A lone video link asks whether you want just the video, the whole channel or the playlist it is in.
+- Several links at once, in any mixture. Each becomes a block you can click to edit, or remove with its ×. Pasted lists are cleaned up, whatever separates them. Links for several channels or playlists go together in one folder named after them, and the same links again, in any order, find it again and ask whether to update it or start from scratch. Videos that turn up twice are done once.
+
+- A warning before getting more than 500 videos (set the number in Settings; 0 turns it off), listing channels by number of videos so you can leave some out.
+- On the command line: several URLs, `--separate`, `--whole-channel` and `--warn-over`.
+- **Clear all** in the link box, which is two rows tall and scrolls.
+
+### Changed
+- A new dark look, with a slim title bar, icon buttons for Settings, Tools and Help, and a new icon.
+- ffmpeg and Deno are checked by running them. Missing, broken or outdated copies are replaced with yt-slurp's own, and copies just installed with WinGet are found without a restart.
+- Error messages name the actual cause and never ask for a terminal command on Windows. For problems it cannot fix, the window offers Try again and Copy details.
+- If only a video's captions can be read, yt-slurp makes the transcript and carries on.
+- A problem with one link no longer stops the others.
+
+### Fixed
+- A YouTube change that broke yt-dlp's solver was reported as Deno being missing.
+
 ## 0.2.4 (24th October 2026)
 
 ### Changed
