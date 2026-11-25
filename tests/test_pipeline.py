@@ -1,5 +1,6 @@
 """End-to-end run with a fake network layer and real ffmpeg (skipped without it)."""
 
+import itertools
 import json
 import shutil
 import subprocess
@@ -418,11 +419,13 @@ def test_newest_and_most_viewed_are_remembered(ranked, monkeypatch):
     assert asked == [["update", "all", "fresh"]] and len(done(ranked)) == 8
 
 
-def test_command_line_limits_and_speed_record(ranked):
+def test_command_line_limits_and_speed_record(ranked, monkeypatch):
+    ticks = itertools.count()
+    monkeypatch.setattr(ys.time, "perf_counter", lambda: float(next(ticks)))  # a second each time it is read
     assert run("--newest", "3", "--most-viewed", "4") == 0
     assert done(ranked) == ["V0", "V1", "V2", "V4", "V5", "V6", "V7"]
     (seconds, n), = ys.read_speeds()["normal"]
-    assert n >= 5 and seconds > 0
+    assert (seconds, n) == (14, 7)  # details and transcript for each
 
 
 def test_negative_limits_are_refused(ranked):

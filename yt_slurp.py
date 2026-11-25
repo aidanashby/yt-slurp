@@ -1899,7 +1899,7 @@ class SourceRun:
 
     def clock(self, vid: str | None) -> None:
         """Time spent on each video. None stops the clock, so pauses don't count."""
-        now = time.monotonic()
+        now = time.perf_counter()  # time.monotonic is coarse on Windows before Python 3.13
         if self.timing:
             last, since = self.timing
             self.times[last] = self.times.get(last, 0) + now - since
