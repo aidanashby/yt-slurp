@@ -2,6 +2,14 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
+## 0.2.6 (25th November 2026)
+
+### Added
+- In the warning before a long run: get only the newest and the most viewed from each channel or playlist. The counts and the time update as you change the numbers, which start at ones that bring the run down to your limit. Getting new videos later keeps to them, unless you choose to get all the videos not done yet. On the command line, `--newest` and `--most-viewed`.
+
+### Changed
+- The time a long run should take comes from your recent runs, once at least five videos have been timed, and leaves out making WAVs.
+
 ## 0.2.5 (25th November 2026)
 
 ### Added

@@ -301,7 +301,8 @@ def test_gemini_command_needs_transcripts(fake):
 
 def test_warning_lists_channels_and_can_leave_some_out(two_channels, monkeypatch):
     seen = []
-    monkeypatch.setattr(ys.UI, "confirm_many", lambda groups: (seen.append(groups), {"Second"})[1], raising=False)
+    monkeypatch.setattr(ys.UI, "confirm_many", lambda groups, *a: (
+        seen.append([(g.name, len(g.todo)) for g in groups]), ({"Second"}, None))[1])
     for extra in ([], ["--separate"]):
         assert run(ys.watch_url(OTHER), "--no-wavs", "--warn-over", "2", *extra) == 0
     assert seen == [[("Test Channel", 4), ("Second", 1)]] * 2  # longest first
@@ -327,7 +328,7 @@ def test_cancelling_after_start_again_keeps_everything(two_channels, monkeypatch
     assert run("--no-wavs", *extra) == 0
     before = sorted(p for p in two_channels.rglob("*") if p.is_file())
     monkeypatch.setattr(ys.UI, "confirm_delete", lambda m: True)
-    monkeypatch.setattr(ys.UI, "confirm_many", lambda groups: None, raising=False)
+    monkeypatch.setattr(ys.UI, "confirm_many", lambda *a: None)
     assert run("--no-wavs", "--fresh", "--warn-over", "1", *extra) == 2
     assert sorted(p for p in two_channels.rglob("*") if p.is_file()) == before
     assert run("--no-wavs", "--fresh", *extra) == 0  # and confirming does start again
@@ -375,3 +376,65 @@ def test_damaged_run_json_is_ignored(tmp_path, text):
 def test_whole_channel_does_every_videos_channel(two_channels):
     found = ys.resolve_videos(["capt0000001", OTHER, "short000005"], ys.Net(), whole_channel=True)
     assert [s.url for s in found] == ["https://www.youtube.com/@test", "https://www.youtube.com/@second"]
+
+
+# ----- keeping to some of each channel -----
+
+@pytest.fixture
+def ranked(fake, monkeypatch):
+    vids = {f"rankedvid{i:02d}": dict(title=f"V{i}", upload_date="20240101", duration=600, language="en",
+                                      automatic_captions={"en-orig": [{"ext": "vtt", "url": "c"}]}) for i in range(8)}
+    monkeypatch.setattr("test_pipeline.VIDEOS", vids)
+
+    class Net(FakeNet):
+        def video_info(self, vid):
+            return {**vids[vid], "id": vid, "channel": "Test Channel", "live_status": "not_live", "channel_id": "UCtest",
+                    "uploader_url": "https://www.youtube.com/@test"}
+
+        def flat(self, url):
+            if not url.endswith("/videos"):
+                raise RuntimeError("no such tab")
+            return {"channel": "Test Channel", "channel_id": "UCtest", "entries": [
+                {"id": k, "title": v["title"], "duration": 600, "view_count": i * 10}
+                for i, (k, v) in enumerate(vids.items())]}
+    monkeypatch.setattr(ys, "Net", Net)
+    return fake / "output" / "Test Channel"
+
+
+def done(folder):
+    return sorted(r["title"] for r in ys.Manifest(folder / "manifest.csv").rows.values() if r["status"] == "transcript")
+
+
+def test_newest_and_most_viewed_are_remembered(ranked, monkeypatch):
+    monkeypatch.setattr(ys.UI, "confirm_many", lambda groups, speed, limit, keep: (set(), (2, 1)))
+    assert run("--warn-over", "5") == 0
+    assert done(ranked) == ["V0", "V1", "V7"]
+    assert len((ranked / "links.txt").read_text().split()) == 3  # the rest are not listed
+    assert run("--warn-over", "5", "--update") == 0  # keeps to it, so nothing new and no question
+    assert done(ranked) == ["V0", "V1", "V7"]
+    asked = []
+    monkeypatch.setattr(ys.UI, "choose", lambda q, o: (asked.append([k for k, _ in o]), "all")[1])
+    assert run() == 0
+    assert asked == [["update", "all", "fresh"]] and len(done(ranked)) == 8
+
+
+def test_command_line_limits_and_speed_record(ranked):
+    assert run("--newest", "3", "--most-viewed", "4") == 0
+    assert done(ranked) == ["V0", "V1", "V2", "V4", "V5", "V6", "V7"]
+    (seconds, n), = ys.read_speeds()["normal"]
+    assert n >= 5 and seconds > 0
+
+
+def test_negative_limits_are_refused(ranked):
+    assert run("--newest", "-3") == 2 and run("--most-viewed", "-1") == 2
+    assert not ranked.exists()
+
+
+def test_limits_apply_to_each_channel_of_a_combined_run(ranked):
+    src = ys.Source(url="k", kind="combined", name="c", folder=ranked, keep=(1, 1), entries=[
+        {"id": f"{c}{i:010d}", "_from": c, "_type": "video", "view_count": i, "duration": 600}
+        for c in "ab" for i in range(5)])
+    args = ys.build_run_parser().parse_args(["u"])
+    ys.normalise_make_options(args)
+    picked = {e["id"] for e in ys.SourceRun(src, ys.RunContext(args, None)).todo_entries()}
+    assert picked == {f"{c}{i:010d}" for c in "ab" for i in (0, 4)}

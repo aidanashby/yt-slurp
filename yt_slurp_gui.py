@@ -1079,8 +1079,8 @@ class GuiUI:
     def choose(self, question, options):
         return self._ask("choose", question, options)
 
-    def confirm_many(self, groups):
-        return self._ask("many", groups)
+    def confirm_many(self, groups, speed, limit, keep):
+        return self._ask("many", groups, speed, limit, keep)
 
     def problem(self, message, details) -> None:
         self.say(f"\n{message}\n\nDetails:\n{details}")
@@ -2243,7 +2243,7 @@ class App:
         if akind == "confirm_delete":
             return messagebox.askyesno(APP_NAME, data[0] + "\n\nDelete them?", icon="warning", default="no")
         if akind == "many":
-            return ManyDialog(self.root, data[0]).result
+            return ManyDialog(self.root, *data).result
         if akind == "types":
             return TypesDialog(self.root, data[0]).result
         return None
@@ -3004,47 +3004,43 @@ class ChoiceDialog:
 
 
 class ManyDialog:
-    """A long run: what is queued, longest first, with × to leave one out.
-    Closing it cancels. result: the names left out, or None."""
+    """A long run: what is queued, longest first, with × to leave one out and a
+    choice to take only some of each. Closing it cancels.
+    result: (names left out, (newest, most viewed) or None), or None."""
 
     VISIBLE = 9  # rows before it scrolls
+    WIDTH = 500
 
-    def __init__(self, parent, groups):
+    def __init__(self, parent, groups, speed, limit, keep=None):
         self.result = None
-        self.groups, self.out = groups, set()
+        self.groups, self.speed, self.limit, self.out = groups, speed, limit, set()
+        self.typed = bool(keep)  # numbers chosen by hand are not replaced by a suggestion
+        self.setting = False
         top, frame = modal(parent, APP_NAME)
         self.top = top
-        self.head = tk.Label(frame, bg=CARD, fg=TEXT, font=(FONT, 11, "bold"), wraplength=480, justify="left")
-        self.head.pack(anchor="w")
+        self.head = tk.Label(frame, bg=CARD, fg=TEXT, font=(FONT, 11, "bold"), wraplength=self.WIDTH, justify="left")
+        self.head.pack(anchor="w", pady=(0, 10))
+
+        self.only = tk.BooleanVar(value=bool(keep))
+        ttk.Radiobutton(frame, text="Get all of them", value=False, variable=self.only, command=self.show).pack(anchor="w")
+        ttk.Radiobutton(frame, text="From each channel or playlist, get only:", value=True, variable=self.only,
+                        command=self.show).pack(anchor="w", pady=(2, 0))
+        row = tk.Frame(frame, bg=CARD)
+        row.pack(anchor="w", padx=(22, 0), pady=(4, 2))
+        self.newest, self.viewed = tk.StringVar(), tk.StringVar()
+        for var, text in ((self.newest, "newest, and"), (self.viewed, "most viewed")):
+            ttk.Spinbox(row, from_=0, to=99_999, width=7, textvariable=var).pack(side="left")
+            tk.Label(row, text=text, bg=CARD, fg=TEXT, font=(FONT, 10)).pack(side="left", padx=(6, 10))
+        tk.Label(frame, text="A video in both counts once. In a playlist, newest means first in its list.", bg=CARD,
+                 fg=MUTED, font=(FONT, 9)).pack(anchor="w", padx=(22, 0), pady=(0, 8))
+        self.set_numbers(*(keep or (None, None)))
+        for var in (self.newest, self.viewed):
+            var.trace_add("write", lambda *a: self.number_typed())
+
         if len(groups) > 1:
             tk.Label(frame, text="Use × to leave one out.", bg=CARD, fg=MUTED, font=(FONT, 10)).pack(
-                anchor="w", pady=(4, 10))
-            box = tk.Frame(frame, bg=FIELD, highlightthickness=1, highlightbackground=BORDER)
-            box.pack(fill="x")
-            row_h = tkfont.Font(font=(FONT, 10)).metrics("linespace") + 16
-            c = self.canvas = tk.Canvas(box, bg=FIELD, highlightthickness=0, width=480, yscrollincrement=row_h,
-                                        height=min(len(groups), self.VISIBLE) * row_h)
-            if len(groups) > self.VISIBLE:
-                sb = ttk.Scrollbar(box, orient="vertical", command=c.yview, style="Slim.Vertical.TScrollbar")
-                c.configure(yscrollcommand=sb.set, scrollregion=(0, 0, 480, len(groups) * row_h))
-                sb.pack(side="right", fill="y")
-                top.bind("<MouseWheel>", lambda e: c.yview_scroll(-1 if e.delta > 0 else 1, "units"))
-            c.pack(side="left")
-            self.rows = {}
-            for i, (name, n) in enumerate(groups):
-                f = tk.Frame(c, bg=FIELD)
-                x = tk.Label(f, bg=FIELD, fg=TEXT, font=(FONT, 10), width=8, cursor="hand2", takefocus=1,
-                             highlightthickness=1, highlightbackground=FIELD, highlightcolor=FOCUS)
-                x.pack(side="right", padx=4)
-                count = tk.Label(f, text=f"{n:,}", bg=FIELD, fg=MUTED, font=(FONT, 10))
-                count.pack(side="right", padx=8)
-                label = tk.Label(f, text=name if len(name) <= 44 else name[:43] + "\u2026", bg=FIELD, anchor="w")
-                label.pack(side="left", padx=10)
-                for key in ("<Button-1>", "<Return>", "<space>"):
-                    x.bind(key, lambda e, name=name: (self.toggle(name), "break")[-1])
-                x.bind("<FocusIn>", lambda e, i=i: c.yview_moveto(max(0, i - self.VISIBLE + 2) / len(groups)))
-                c.create_window(0, i * row_h, window=f, anchor="nw", width=480, height=row_h)
-                self.rows[name] = (label, x)
+                anchor="w", pady=(4, 6))
+        self.build_rows(top, frame)
         row = tk.Frame(frame, bg=CARD)
         row.pack(fill="x", pady=(16, 0))
         self.go = RoundButton(row, "Get all", self.ok, colour=ACCENT, hover=ACCENT_DARK, width=170, bg=CARD)
@@ -3056,22 +3052,87 @@ class ManyDialog:
         top.lift()
         parent.wait_window(top)
 
+    def build_rows(self, top, frame):
+        groups, width = self.groups, self.WIDTH
+        box = tk.Frame(frame, bg=FIELD, highlightthickness=1, highlightbackground=BORDER)
+        box.pack(fill="x")
+        row_h = tkfont.Font(font=(FONT, 10)).metrics("linespace") + 16
+        c = self.canvas = tk.Canvas(box, bg=FIELD, highlightthickness=0, width=width, yscrollincrement=row_h,
+                                    height=min(len(groups), self.VISIBLE) * row_h)
+        if len(groups) > self.VISIBLE:
+            sb = ttk.Scrollbar(box, orient="vertical", command=c.yview, style="Slim.Vertical.TScrollbar")
+            c.configure(yscrollcommand=sb.set, scrollregion=(0, 0, width, len(groups) * row_h))
+            sb.pack(side="right", fill="y")
+            top.bind("<MouseWheel>", lambda e: c.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        c.pack(side="left")
+        self.rows = {}
+        for i, g in enumerate(groups):
+            f = tk.Frame(c, bg=FIELD)
+            x = tk.Label(f, bg=FIELD, fg=TEXT, font=(FONT, 10), width=8, cursor="hand2", takefocus=1,
+                         highlightthickness=1, highlightbackground=FIELD, highlightcolor=FOCUS)
+            if len(groups) > 1:
+                x.pack(side="right", padx=4)
+            count = tk.Label(f, bg=FIELD, fg=MUTED, font=(FONT, 10))
+            count.pack(side="right", padx=8)
+            label = tk.Label(f, text=g.name if len(g.name) <= 38 else g.name[:37] + "\u2026", bg=FIELD, anchor="w")
+            label.pack(side="left", padx=10)
+            for key in ("<Button-1>", "<Return>", "<space>"):
+                x.bind(key, lambda e, name=g.name: (self.toggle(name), "break")[-1])
+            x.bind("<FocusIn>", lambda e, i=i: c.yview_moveto(max(0, i - self.VISIBLE + 2) / len(groups)))
+            c.create_window(0, i * row_h, window=f, anchor="nw", width=width, height=row_h)
+            self.rows[g.name] = (label, count, x)
+
+    def left(self):
+        return [g for g in self.groups if g.name not in self.out]
+
+    def set_numbers(self, newest=None, viewed=None):
+        """Fill in the numbers, by default with ones that bring the run down to the limit."""
+        if newest is None:
+            newest = viewed = ys.suggest_keep(self.left(), self.limit)
+        self.setting = True
+        self.newest.set(str(newest))
+        self.viewed.set(str(viewed))
+        self.setting = False
+
+    def number_typed(self):
+        if not self.setting:
+            self.typed = True
+            self.only.set(True)
+            self.show()
+
+    def keep(self):
+        """The numbers in force; (0, 0) if neither box holds one."""
+        if not self.only.get():
+            return None
+
+        def number(var):
+            text = var.get().strip().replace(",", "")
+            return int(text) if text.isascii() and text.isdigit() and len(text) < 9 else 0
+        return number(self.newest), number(self.viewed)
+
     def toggle(self, name):
-        self.out ^= {name}
-        self.show()
+        if len(self.groups) > 1:
+            self.out ^= {name}
+            if not self.typed and self.left():
+                self.set_numbers()
+            self.show()
 
     def show(self):
-        total = sum(n for name, n in self.groups if name not in self.out)
-        self.head.configure(text=ys.long_run_text(total))
-        self.go.set_text(f"Get {total:,} video{'' if total == 1 else 's'}")
-        self.go.set_enabled(total > 0)
-        for name, (label, x) in getattr(self, "rows", {}).items():
-            out = name in self.out
+        keep = self.keep()
+        total = 0
+        for g in self.groups:
+            out, n = g.name in self.out, g.count(keep)
+            total += 0 if out else n
+            label, count, x = self.rows[g.name]
             label.configure(fg=MUTED if out else TEXT, font=(FONT, 10, "overstrike") if out else (FONT, 10))
+            count.configure(text=f"{n:,} of {len(g.todo):,}" if keep else f"{n:,}")
             x.configure(text="Put back" if out else "×", fg=LINK if out else TEXT)
+        self.head.configure(text=ys.long_run_text(total, self.speed))
+        self.go.set_text(f"Get {total:,} video{'' if total == 1 else 's'}")
+        self.go.set_enabled(total > 0 and keep != (0, 0))
 
     def ok(self):
-        self.result = set(self.out)
+        self.result = (set(self.out), self.keep())
         self.top.destroy()
 
 

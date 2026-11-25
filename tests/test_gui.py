@@ -502,19 +502,45 @@ def test_text_contrast_meets_aa():
         assert ratio(a, b) >= 4.5, (a, b, ratio(a, b))
 
 
-def test_many_dialog_leaves_channels_out(app, monkeypatch):
+def test_many_dialog(app, monkeypatch):
     import yt_slurp_gui as gui
-    groups = [(f"Channel {i}", 100 - i) for i in range(12)]
     monkeypatch.setattr(app.root, "wait_window", lambda top: None, raising=False)
-    dialog = gui.ManyDialog(app.root, groups)
+
+    def group(name, n):  # listed newest first, the oldest the most viewed
+        return ys.Group(name, [({"id": f"{name}{i}", "view_count": i}, "video") for i in range(n)],
+                        {f"{name}{i}" for i in range(n)}, set())
+    groups = [group("A", 1136), group("B", 420), group("C", 60)]
+    d = gui.ManyDialog(app.root, groups, (6.0, True), 500)
     app.root.update()
-    assert dialog.go.text == f"Get {sum(n for _, n in groups):,} videos"
-    dialog.toggle("Channel 0")
-    assert dialog.go.text == f"Get {sum(n for _, n in groups) - 100:,} videos"
-    dialog.toggle("Channel 1")
-    dialog.toggle("Channel 1")  # put back
-    dialog.ok()
-    assert dialog.result == {"Channel 0"}
+    assert d.go.text == "Get 1,616 videos" and "2.5 hours" in d.head.cget("text")
+    d.only.set(True)
+    d.show()
+    total = sum(g.count(d.keep()) for g in groups)
+    assert total <= 500 and sum(g.count((d.keep()[0] + 1,) * 2) for g in groups) > 500  # the suggestion fits
+    before = d.keep()
+    d.toggle("B")
+    assert d.keep()[0] > before[0]  # suggested again without B
+    d.newest.set("10")
+    d.viewed.set("20")
+    assert d.rows["A"][1].cget("text") == "30 of 1,136" and d.go.text == "Get 60 videos"
+    assert "minutes" in d.head.cget("text")
+    d.toggle("B")  # put back: typed numbers stay
+    assert d.keep() == (10, 20) and d.go.text == "Get 90 videos"
+    for bad in ("", "x", "-5", "\u00b2", "9" * 50):
+        d.newest.set(bad)
+        assert d.keep() == (0, 20)
+    d.viewed.set("0")
+    assert not d.go.enabled
+    d.viewed.set("7")
+    d.toggle("C")
+    d.ok()
+    assert d.result == ({"C"}, (0, 7))
+    one = gui.ManyDialog(app.root, groups[:1], (6.0, False), 500, (3, 0))
+    assert one.keep() == (3, 0) and "at least" in one.head.cget("text")
+    groups[0].wanted.add("A1")  # a pasted video is always counted, but 0 and 0 is not a limit
+    one.newest.set("0")
+    assert one.go.text == "Get 1 video" and not one.go.enabled
+    one.top.destroy()
 
 
 def test_drop_menu(app):

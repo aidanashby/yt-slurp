@@ -357,3 +357,53 @@ def test_a_malformed_link_does_not_break_a_paste(bad):
     good = "https://youtu.be/dQw4w9WgXcQ"
     assert ys.classify_url(bad)[0] == "unknown"
     assert good in ys.split_links(f"{bad} {good}")
+
+
+# ----- long runs -----
+
+def listed(*views, kind="video", first=0):
+    return [({"id": f"{kind}{first + i}", "view_count": v}, kind) for i, v in enumerate(views)]
+
+
+def test_kept_ids_counts_overlap_once():
+    entries = listed(5, 100, 1, 50, 2)
+    assert ys.kept_ids(entries, (2, 2), set()) == {"video0", "video1", "video3"}
+    assert ys.kept_ids(entries, (0, 1), set()) == {"video1"}
+    assert ys.kept_ids(entries, (99, 99), set()) == {e["id"] for e, _ in entries}
+    assert ys.kept_ids(entries, (0, 0), {"video4"}) == {"video4"}
+    assert ys.kept_ids(entries, (1, 0), {"video0"}) == {"video0", "video1"}  # pasted ones don't use up the number
+
+
+def test_kept_ids_ties_missing_views_live_and_kinds():
+    assert ys.kept_ids(listed(None, 0, None, 3, 3), (0, 3), set()) == {"video3", "video4", "video1"}
+    mixed = listed(1, 1, 1) + listed(9, 9, kind="short")
+    assert ys.kept_ids(mixed, (3, 0), set()) == {"video0", "short0", "video1"}
+    live = [({"id": "up", "live_status": "is_upcoming"}, "stream")] + listed(1, 2)
+    assert ys.kept_ids(live, (1, 0), set()) == {"video0"}
+
+
+@pytest.mark.parametrize("value", [None, [], [0, 0], [1], ["1", 2], [-1, 5], [True, 5], "ab", {"a": 1}, [1.5, 2]])
+def test_damaged_keep_is_ignored(value):
+    assert ys.clean_keep(value) is None
+
+
+def test_speed_comes_from_recent_runs():
+    assert ys.video_seconds("normal") == (7.0, False)
+    ys.record_speed("normal", [4, 4, 4])
+    assert not ys.video_seconds("normal")[1]  # too few to go by
+    ys.record_speed("normal", [6, 6, 6, 500])  # one held up by a question
+    assert ys.video_seconds("normal") == (5.0, True)
+    assert ys.video_seconds("slow") == (15.0, False)
+    for _ in range(50):
+        ys.record_speed("normal", [1.0] * 10)
+    assert ys.video_seconds("normal") == (1.0, True)  # old runs are forgotten
+    for text in ("[]", "{", '{"normal": 5}', '{"normal": [["a", 1], [NaN, 2], [1]]}'):
+        ys.speed_file().write_text(text)
+        assert ys.video_seconds("normal") == (7.0, False)
+
+
+def test_long_run_text():
+    assert "less than a minute" in ys.long_run_text(1, (6, True))
+    assert "about 30 minutes" in ys.long_run_text(300, (6, True))
+    assert "at least 1 hour." in ys.long_run_text(600, (6, False))
+    assert "2.5 hours" in ys.long_run_text(1500, (6, True))

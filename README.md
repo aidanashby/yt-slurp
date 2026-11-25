@@ -98,7 +98,7 @@ While it runs:
 
 **Single videos.** Paste one video link on its own and yt-slurp asks whether you want just that video, the whole channel or, if the link has one, the whole playlist. A single video goes in its channel's folder, without a links list, however short it is.
 
-**Long runs.** If there are more than 500 videos to get, yt-slurp asks first. It lists each channel or playlist with its number of videos, and you can leave any out. Change the number in **Settings** (0 turns it off).
+**Long runs.** If there are more than 500 videos to get, yt-slurp asks first. It lists each channel or playlist with its number of videos and how long the run should take, going by your recent runs. You can leave any out, or get only the newest and the most viewed from each: change either number and the counts and time update as you type. A video in both counts once, and in a playlist "newest" means first in its list. yt-slurp remembers the numbers, so getting new videos later keeps to them unless you choose to get them all. Videos shorter than your minimum, and ones already done, are not counted. Change when it asks in **Settings** (0 turns it off).
 
 **Using a list of links.** Select **Use a list of links from a file** and choose a text file with one channel, playlist or video link per line. Lines starting with `#` are ignored. Each channel or playlist gets its own folder, and a video link that is part of a playlist means the playlist.
 
@@ -236,6 +236,7 @@ yt-slurp gui
 | `--delete-wavs` | off | `merge` only: delete a video's WAV files once merged |
 | `--separate` | off | With several URLs: a folder for each channel or playlist (always so with `--file`) |
 | `--whole-channel` | off | With a video URL: do the video's whole channel |
+| `--newest N` / `--most-viewed N` | all | Only the N newest (first, in a playlist) and the N most viewed from each channel or playlist |
 | `--warn-over N` | 0 | Ask before doing more than N videos (0 never asks) |
 
 ## For developers

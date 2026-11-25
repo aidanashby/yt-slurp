@@ -1,10 +1,10 @@
 # yt-slurp: status
 
-Last updated: 25th November 2026 (0.2.5 release)
+Last updated: 25th November 2026 (0.2.6 release)
 
 ## Where it is
 
-yt-slurp 0.2.5 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works, including the first-run downloads on a laptop that had neither tool (0.2.3, HP laptop). Live use on more channels and the Update button (0.2.3 to 0.2.4 is the first real test) are the next things to watch.
+yt-slurp 0.2.6 is released as a single self-contained `yt-slurp.exe` on GitHub's Releases page, built and tested on GitHub's Windows machines. It replaces `yt-slurp.bat`, and the repository is public. The `.exe` has been run on the owner's Windows laptop and works, including the first-run downloads on a laptop that had neither tool (0.2.3, HP laptop). Live use on more channels and the Update button (0.2.3 to 0.2.4 is the first real test) are the next things to watch.
 
 ## Done
 
@@ -38,11 +38,15 @@ yt-slurp 0.2.5 is released as a single self-contained `yt-slurp.exe` on GitHub's
   - update and fresh re-runs, cookie retry, bot-check pause, a run lock per folder, and a clean stop.
   The command line (`yt-slurp ...`) still works.
 - **Pre-release review** (see `docs/TEST-REPORT.md`): keyboard access and WCAG AA contrast throughout the window, a symbol as well as a colour for each kind of result, video IDs validated before use in any path, damaged settings files tolerated, and a fix for very slow search highlighting in long transcripts.
-- **Tests:** 204 pytest tests (also run on Windows by the build workflow), covering the pure functions, offline end-to-end runs, negative and edge cases, first-run setup and updates, yt-dlp updates and repairs, colour contrast, and the window driving a run, chips, filters, search, the editor, auto-scroll, Pause/Resume, settings and an automatic merge.
+- **Tests:** 222 pytest tests (also run on Windows by the build workflow), covering the pure functions, offline end-to-end runs, negative and edge cases, first-run setup and updates, yt-dlp updates and repairs, colour contrast, and the window driving a run, chips, filters, search, the editor, auto-scroll, Pause/Resume, settings and an automatic merge.
 
 - **0.2.5:** yt-dlp updates itself outside the `.exe` (`yt_slurp_engine.py`; `hooks/` bundles the whole standard library so newer versions load); repair and retry during a slurp; single-video links; several links as blocks, sharing one folder; a warning over 500 videos that lists channels; ffmpeg and Deno checked by running them; Try again and Copy details; the dark look.
 
+- **0.2.6:** newest and most viewed limits for long runs (`kept_ids`, stored as `keep` in `run.json`), and time estimates from recent runs (`speed.json` in `%LOCALAPPDATA%\yt-slurp`, transcripts only, no WAVs).
+
 ## Decisions taken
+
+- A limit is "the top n overall" each time, so an update only fetches videos that have entered it; earlier ones stay. A channel's videos, Shorts and streams take turns for newest, since listings give no dates.
 
 - Routine yt-dlp updates wait 48 hours after a release; repairs take the newest at once.
 - Pasted links covering several channels or playlists share one folder, found again by its set of links (not its name), with the usual question about updating or starting again. Its name is capped at 60 characters, then "and more". Links from a file keep a folder each.
@@ -65,6 +69,7 @@ yt-slurp 0.2.5 is released as a single self-contained `yt-slurp.exe` on GitHub's
 
 ## Not yet tested
 
+- 0.2.6: the long-run window by hand in the `.exe`, and a limited run of several large channels. Checked live from source: 3 newest and 4 most viewed from one channel.
 - 0.2.5: a full slurp in the `.exe`, the first-run downloads, the `.exe` updating yt-dlp itself, and Windows 10. Windows misplaces a DPI-unaware window snapped to the inner edge of a second screen with different scaling (any Tk window, 150% beside 100%); `TitleBar.fix_snap` corrects it after the drag, leaving a 7-pixel gap at that edge, and the owner has confirmed it. Checked by the owner: snapping, top-edge resizing, and the minimise and restore animation. Checked live from source: a mid-run yt-dlp repair, a video with its own channel, and combined folders.
 - The Update button end to end, from 0.2.3 to 0.2.4.
 - The "Setting up yt-slurp" window in the `.exe`. It is tested from source; the 0.2.3 to 0.2.4 update is the first chance to see it in a build.

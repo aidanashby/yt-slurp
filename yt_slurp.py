@@ -13,6 +13,7 @@ import csv
 import datetime
 import hashlib
 import html
+import itertools
 import json
 import math
 import os
@@ -31,7 +32,7 @@ from pathlib import Path
 import yt_slurp_engine as engine
 import yt_slurp_setup as setup
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 # =============================================================================
 # Constants
@@ -839,14 +840,15 @@ class ConsoleUI:
     def counts(self, folder: Path, counts: dict) -> None:
         pass
 
-    def confirm_many(self, groups: list[tuple[str, int]]) -> set[str] | None:
-        """Confirm a long run over (name, number of videos), longest first.
-        Returns the names to leave out, or None to cancel."""
-        for name, n in groups:
-            self.say(f"  {name}: {n:,}")
-        total = sum(n for _, n in groups)
-        go = self.choose(f"{long_run_text(total)} Carry on?", [("yes", f"Get all {total:,}"), ("none", "Cancel")])
-        return set() if go == "yes" else None
+    def confirm_many(self, groups, speed, limit, keep):
+        """Confirm a long run over Groups, longest first. speed is from
+        video_seconds, limit the size that prompts the question, keep the limit
+        already in force. Returns (names to leave out, keep), or None to cancel."""
+        for g in groups:
+            self.say(f"  {g.name}: {g.count(keep):,}")
+        total = sum(g.count(keep) for g in groups)
+        go = self.choose(f"{long_run_text(total, speed)} Carry on?", [("yes", f"Get {total:,}"), ("none", "Cancel")])
+        return (set(), keep) if go == "yes" else None
 
     def problem(self, message: str, details: str) -> None:
         """Something yt-slurp could not fix itself."""
@@ -1399,6 +1401,7 @@ class Source:
     entries: list | None = None  # playlists, single videos and combined
     mode: str = "new"         # new, update or fresh
     types: list | None = None
+    keep: tuple | None = None  # take only (newest, most viewed) of each channel
     wanted: set = field(default_factory=set)  # videos asked for by their own link
     failed: str = ""
 
@@ -1470,26 +1473,97 @@ def several_places(sources: list[Source]) -> bool:
     return len({(s.source_id if s.kind != "playlist" else "") or s.url or s.name for s in sources}) > 1
 
 
+@dataclass
+class Group:
+    """One channel or playlist in the question before a long run."""
+    name: str
+    entries: list   # (entry, type), in listing order: everything that could be chosen
+    todo: set       # IDs still to get
+    wanted: set     # IDs asked for by their own link: always chosen
+
+    def count(self, keep: tuple[int, int] | None) -> int:
+        return len(self.todo & kept_ids(self.entries, keep, self.wanted)) if keep else len(self.todo)
+
+
+def kept_ids(entries: list, keep: tuple[int, int], wanted: set) -> set:
+    """IDs of the newest and the most viewed, each chosen once. keep is (how many
+    newest, how many most viewed). Listings give no dates but put the newest
+    first, so a channel's kinds of video take turns. Playlists go in their own order."""
+    newest, viewed = keep
+    pool = [(e, t) for e, t in entries
+            if e["id"] not in wanted and e.get("live_status") not in ("is_upcoming", "is_live")]
+    kinds: dict[str, list] = {}
+    for e, t in pool:
+        kinds.setdefault(t, []).append(e["id"])
+    in_turn = [i for turn in itertools.zip_longest(*kinds.values()) for i in turn if i]
+    # A stable sort: ties and videos without a count stay in listing order
+    ranked = sorted(pool, key=lambda p: -1 if (v := p[0].get("view_count")) is None else v, reverse=True)
+    return set(in_turn[:newest]) | {e["id"] for e, _ in ranked[:viewed]} | wanted
+
+
+def suggest_keep(groups: list[Group], limit: int) -> int:
+    """The largest n for which the n newest and n most viewed of each come to no more than limit."""
+    low, high = 1, max([len(g.entries) for g in groups], default=1)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if sum(g.count((mid, mid)) for g in groups) <= limit:
+            low = mid
+        else:
+            high = mid - 1
+    return low
+
+
+def clean_keep(value) -> tuple[int, int] | None:
+    """A stored limit, or None if there is none or it is damaged."""
+    if (isinstance(value, (list, tuple)) and len(value) == 2 and all(type(v) is int and v >= 0 for v in value)
+            and any(value)):
+        return value[0], value[1]
+    return None
+
+
+def keep_text(keep: tuple[int, int]) -> str:
+    parts = [f"{n:,} {what}" for n, what in zip(keep, ("newest", "most viewed")) if n]
+    return " and ".join(parts)
+
+
 def warn_if_many(sources: list[Source], ctx: RunContext) -> list[Source]:
-    """Ask before a long run, offering to leave channels out. Returns what is
-    left. Counts what is known from the listing, so videos found to be short
-    later may bring it down."""
-    counts: dict[str, int] = {}
+    """Ask before a long run, offering to leave channels out or take only some
+    of each. Returns what is left. Counts what is known from the listing, so
+    videos found to be short later may bring it down."""
+    groups: dict[str, Group] = {}
+    seen: dict[str, set] = {}
+    planned = 0
     for s in sources:
-        for e in SourceRun(s, ctx).todo_entries():
-            name = e.get("_from") or s.name
-            counts[name] = counts.get(name, 0) + 1
-    total = sum(counts.values())
-    if not ctx.args.warn_over or total <= ctx.args.warn_over:
+        run = SourceRun(s, ctx)
+        keep, s.keep = s.keep, None
+        todo = {e["id"] for e in run.todo_entries()}
+        s.keep = keep
+        planned += len(run.todo_entries())
+        for e, vtype in run.eligible():
+            g = groups.setdefault(e.get("_from") or s.name, Group(e.get("_from") or s.name, [], set(), set()))
+            if e["id"] not in seen.setdefault(g.name, set()):
+                seen[g.name].add(e["id"])
+                g.entries.append((e, vtype))
+            if e["id"] in todo:
+                g.todo.add(e["id"])
+            if e["id"] in s.wanted:
+                g.wanted.add(e["id"])
+    if not ctx.args.warn_over or planned <= ctx.args.warn_over:
         return sources
-    groups = sorted(counts.items(), key=lambda c: (-c[1], c[0].lower()))
-    left_out = UI.confirm_many(groups)
-    if left_out is None or len(left_out) >= len(groups):
+    queue = sorted((g for g in groups.values() if g.todo), key=lambda g: (-len(g.todo), g.name.lower()))
+    keep = next((s.keep for s in sources if s.keep), None)
+    answer = UI.confirm_many(queue, video_seconds(ctx.args.pace), ctx.args.warn_over, keep)
+    if answer is None or len(answer[0]) >= len(queue):
         raise Stop("Cancelled. Nothing was downloaded.")
-    for name in left_out:
-        say(f"Left out: {name} ({counts[name]} videos)")
+    left_out, keep = answer
+    for g in queue:
+        if g.name in left_out:
+            say(f"Left out: {g.name} ({len(g.todo)} videos)")
+    if keep:
+        say(f"Getting only the {keep_text(keep)} from each.")
     kept = []
     for s in sources:
+        s.keep = keep
         if s.kind == "combined":
             s.entries = [e for e in s.entries if e.get("_from") not in left_out]
             kept.append(s)
@@ -1498,10 +1572,66 @@ def warn_if_many(sources: list[Source], ctx: RunContext) -> list[Source]:
     return kept
 
 
-def long_run_text(total: int) -> str:
-    hours = total * 2 * sum(DELAY_RANGE_S) / 2 / 3600  # details and captions, a pause before each
-    took = f"about {hours:.0f} hours" if hours >= 1.5 else "about an hour" if hours >= 0.75 else "under an hour"
-    return f"There are {total:,} videos to get. At this pace that takes {took} or more."
+# ----- how long a run takes -----
+
+SPEED_RUNS = 20  # runs remembered for each pace
+SPEED_MIN_VIDEOS = 5
+
+
+def speed_file() -> Path:
+    return setup.data_dir() / "speed.json"
+
+
+def read_speeds() -> dict:
+    """{pace: [[seconds, videos], ...]}, newest run last."""
+    try:
+        data = json.loads(read_text(speed_file()))
+    except (OSError, ValueError, RecursionError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {pace: [r for r in runs if isinstance(r, list) and len(r) == 2
+                   and all(isinstance(v, (int, float)) and 0 < v < 1e7 for v in r)]
+            for pace, runs in data.items() if pace in PACES and isinstance(runs, list)}
+
+
+def record_speed(pace: str, times: list[float]) -> None:
+    """Remember how long a run's videos took. A video held up by a question or
+    a retry is left out, as far as it stands out."""
+    if not times:
+        return
+    usual = sorted(times)[len(times) // 2]
+    times = [t for t in times if t <= 4 * usual]
+    speeds = read_speeds()
+    speeds[pace] = (speeds.get(pace, []) + [[round(sum(times), 2), len(times)]])[-SPEED_RUNS:]
+    try:
+        speed_file().parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(speed_file(), json.dumps(speeds))
+    except OSError:
+        pass
+
+
+def video_seconds(pace: str) -> tuple[float, bool]:
+    """(seconds a video takes, whether that comes from recent runs)."""
+    runs = [r for r in read_speeds().get(pace, []) if r[0] > 0]
+    if sum(n for _, n in runs) >= SPEED_MIN_VIDEOS:
+        return sum(s for s, _ in runs) / sum(n for _, n in runs), True
+    return float(sum(PACES[pace])), False  # details and captions, an average wait before each
+
+
+def long_run_text(total: int, speed: tuple[float, bool]) -> str:
+    minutes = total * speed[0] / 60
+    if minutes < 1:
+        took = "less than a minute"
+    elif minutes < 55:
+        n = max(1, round(minutes / 5) * 5 if minutes >= 10 else round(minutes))
+        took = f"{n} minute{'s' if n > 1 else ''}"
+    else:
+        n = round(minutes / 30) / 2
+        took = f"{n:g} hour{'s' if n != 1 else ''}"
+    how = "about" if speed[1] else "at least"
+    videos = f"{total:,} video{'' if total == 1 else 's'}"
+    return f"{videos} to get, taking {how} {took}" + (", going by your recent runs." if speed[1] else ".")
 
 
 def combine(sources: list[Source], urls: list[str]) -> Source:
@@ -1589,12 +1719,19 @@ def decide_mode(src: Source, args, missing: list[str] | None = None) -> None:
         src.mode = "fresh"
     else:
         rows = len(Manifest(folder / "manifest.csv").rows)
+        stored = clean_keep(load_run(folder).get("keep"))
+        options = [("update", "Get new videos and retry any that failed"), ("fresh", "Start again from scratch")]
+        if stored:
+            options[:1] = [("update", f"Get new videos, keeping to the {keep_text(stored)}"),
+                           ("all", "Get all the videos not done yet")]
         src.mode = UI.choose(
             (f"These links have been slurped together before, in the folder {folder.name} ({rows} videos)."
              if src.kind == "combined" else f"{src.name} has been slurped before ({rows} videos).")
-            + " What would you like to do?",
-            [("update", "Get new videos and retry any that failed"),
-             ("fresh", "Start again from scratch")])
+            + " What would you like to do?", options)
+    if src.mode == "all":
+        src.mode = "update"
+    elif src.mode == "update":
+        src.keep = clean_keep(load_run(folder).get("keep"))
     if src.mode == "fresh":
         if missing:
             raise Stop(f"Nothing deleted. Starting again would lose the results for {', '.join(missing)}, which could "
@@ -1718,6 +1855,7 @@ class SourceRun:
         only_videos = src.entries and all(e["id"] in src.wanted for e in src.entries)
         self.args = video_args(ctx.args) if only_videos else ctx.args
         self.folder = src.folder
+        self.timing, self.times, self.fetched = None, {}, set()
         self.manifest = Manifest(self.folder / "manifest.csv")
         self.meta_dir = self.folder / DIR_WORK / "meta"
         self.audio_dir = self.folder / DIR_WORK / "audio"
@@ -1743,6 +1881,7 @@ class SourceRun:
     def fetch_meta(self, vid, max_age=None) -> dict:
         meta = self.load_meta(vid, max_age)
         if meta is None:
+            self.fetched.add(vid)
             info = self.ctx.net.video_info(vid)
             meta = self.keep_meta(vid, info)
         return meta
@@ -1756,19 +1895,57 @@ class SourceRun:
         write_atomic(self.meta_path(vid), json.dumps(meta))
         return meta
 
+    # ----- timing -----
+
+    def clock(self, vid: str | None) -> None:
+        """Time spent on each video. None stops the clock, so pauses don't count."""
+        now = time.monotonic()
+        if self.timing:
+            last, since = self.timing
+            self.times[last] = self.times.get(last, 0) + now - since
+        self.timing = (vid, now) if vid else None
+
+    def save_times(self) -> None:
+        """WAVs take far longer and are rare, so they are left out, as are
+        videos whose details were already on disk."""
+        self.timing = None
+        record_speed(self.args.pace, [t for v, t in self.times.items() if v in self.fetched
+                                      and self.manifest.get(v)["status"] in ("transcript", "skipped-non-english")])
+        self.times, self.fetched = {}, set()
+
     # ----- listing -----
 
     def listing(self) -> list[tuple[dict, str]]:
         return source_listing(self.src)
 
+    def eligible(self) -> list[tuple[dict, str]]:
+        """The listing without what is known to be too short, private or deleted."""
+        min_s, out = self.args.min_minutes * 60, []
+        for e, vtype in self.listing():
+            row = self.manifest.get(e["id"])
+            dur = e.get("duration") or (row or {}).get("duration")
+            short = float(dur) < min_s if dur else vtype == "short" and min_s > SHORTS_MAX_S
+            if e["id"] in self.src.wanted or not short and e.get("title") not in ("[Private video]", "[Deleted video]"):
+                out.append((e, vtype))
+        return out
+
+    def kept(self) -> set | None:
+        """The videos to keep to, channel by channel, or None for all."""
+        if not self.src.keep:
+            return None
+        groups: dict[str, list] = {}
+        for e, vtype in self.eligible():
+            groups.setdefault(e.get("_from", ""), []).append((e, vtype))
+        ids = [kept_ids(g, self.src.keep, self.src.wanted) for g in groups.values()]
+        return set().union(self.src.wanted, *ids)
+
     def todo_entries(self) -> list[dict]:
         """About which videos select() will choose, without recording anything."""
-        a, todo = self.args, []
-        for e, vtype in self.listing():
+        a, todo, kept = self.args, [], self.kept()
+        for e, _ in self.eligible():
             row = None if self.src.mode == "fresh" else self.manifest.get(e["id"])
-            dur = e.get("duration") or (row or {}).get("duration")
-            short = float(dur) < a.min_minutes * 60 if dur else vtype == "short" and a.min_minutes * 60 > SHORTS_MAX_S
-            if e["id"] in self.src.wanted or not short and (not row or self.needs_work(row)):
+            if (kept is None or e["id"] in kept) and (
+                    e["id"] in self.src.wanted or not row or self.needs_work(row)):
                 todo.append(e)
         return todo[:max(a.limit, len(self.src.wanted))] if a.limit else todo
 
@@ -1778,12 +1955,15 @@ class SourceRun:
         min_s = a.min_minutes * 60
         update = self.src.mode == "update"
         todo, short_n, short_by_type, total_by_type = [], 0, {}, {}
+        kept = self.kept()
         for e, vtype in self.listing():
             vid = e["id"]
             if not valid_id(vid):
                 say(f"  Ignoring a listing entry with an unexpected ID: {str(vid)[:40]!r}")
                 continue
             total_by_type[vtype] = total_by_type.get(vtype, 0) + 1
+            if kept is not None and vid not in kept:
+                continue
             row = self.manifest.get(vid)
             title = e.get("title") or (row or {}).get("title") or vid
             dur = e.get("duration") or ((row or {}).get("duration") or None)
@@ -1875,9 +2055,11 @@ class SourceRun:
         min_s = self.args.min_minutes * 60
         total = total or len(todo)
         for i, vid in enumerate(todo, start + 1):
+            self.clock(None)
             check_stop()
             if self.ctx.stop_all:
                 break
+            self.clock(vid)
             row = self.manifest.get(vid)
             UI.progress("Getting video details", i, total)
             say(f"  [{i}/{total}] metadata: {row['title'][:70]}")
@@ -1931,9 +2113,11 @@ class SourceRun:
     def content_pass(self, ready: list[str], start: int = 0, total: int = 0) -> None:
         total = total or len(ready)
         for i, vid in enumerate(ready, start + 1):
+            self.clock(None)
             check_stop()
             if self.ctx.stop_all:
                 break
+            self.clock(vid)
             row = self.manifest.get(vid)
             UI.progress("Making transcripts and WAVs", i, total)
             say(f"  [{i}/{total}] {row['title'][:70]}")
@@ -2054,12 +2238,15 @@ class SourceRun:
                 for start in range(0, len(todo), ROUND_SIZE):
                     chunk = todo[start:start + ROUND_SIZE]
                     ready = self.metadata_pass(chunk, start, len(todo))
+                    self.clock(None)
                     if not a.links_only:
                         self.content_pass(ready, start, len(todo))
+                        self.clock(None)
                     self.write_outputs()
                     if self.ctx.stop_all:
                         break
             finally:
+                self.save_times()
                 self.save()
                 self.write_outputs()
 
@@ -2083,7 +2270,7 @@ def save_run(src: Source, args) -> None:
     else:
         run.pop("started_by", None)
     run.update({
-        "source_id": src.source_id,
+        "source_id": src.source_id, "keep": src.keep,
         "url": src.url, "kind": "channel" if src.kind == "video" and src.url else src.kind, "name": src.name, "types": src.types,
         "lang": args.lang, "min_minutes": args.min_minutes, "chunk_minutes": args.chunk_minutes,
         "wav_rate": args.wav_rate, "updated": now_stamp(),
@@ -2521,6 +2708,10 @@ def build_run_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-wavs", action="store_true", help="don't make WAVs for videos without captions")
     p.add_argument("--warn-over", type=int, default=0, metavar="N",
                    help="ask before doing more than N videos (0, the default, never asks)")
+    p.add_argument("--newest", type=int, default=0, metavar="N",
+                   help="only the N newest from each channel (or first in each playlist)")
+    p.add_argument("--most-viewed", type=int, default=0, metavar="N",
+                   help="only the N most viewed from each; with --newest, both sets")
     p.add_argument("--whole-channel", action="store_true", help="with a video URL: do the video's whole channel")
     p.add_argument("--separate", action="store_true",
                    help="with several URLs: a folder for each channel or playlist (always so with --file)")
@@ -2562,6 +2753,8 @@ def cmd_run(argv: list[str]) -> None:
     DELAY_RANGE_S = PACES[args.pace]
     if bool(args.url) == bool(args.file):
         raise Stop("Give channel, playlist or video URLs, or --file urls.txt.")
+    if min(args.newest, args.most_viewed) < 0:
+        raise Stop("--newest and --most-viewed cannot be negative.")
     preflight()
     urls = split_links("\n".join(read_url_file(args.file) if args.file else args.url))
 
@@ -2620,18 +2813,18 @@ def cmd_run(argv: list[str]) -> None:
         if together:
             key = "\n".join(sorted(links))
             earlier = folder_for_links(output, key)
-            mode = "new"
+            mode, keep = "new", None
             if earlier:
                 stored = load_run(earlier).get("types")
                 before = Source(url=key, kind="combined", folder=earlier)
                 decide_mode(before, args, [s.url or s.name for s in sources
                                            if s.failed or s.kind == "video" and not s.source_id])
-                mode = before.mode
+                mode, keep = before.mode, before.keep
                 if mode == "update" and stored and not args.types:
                     args.types = ",".join(stored)  # the same kinds of video as last time
             choose_types(live, args)
             live = [combine(live, links)]
-            live[0].folder, live[0].mode = earlier, mode
+            live[0].folder, live[0].mode, live[0].keep = earlier, mode, keep
             sources = [s for s in sources if s.failed] + live
         for src in live:
             # A channel's single videos share its folder, so nothing is done twice
@@ -2653,6 +2846,9 @@ def cmd_run(argv: list[str]) -> None:
         if not together:
             choose_types(live, args)
 
+        if args.newest or args.most_viewed:
+            for src in live:
+                src.keep = (args.newest, args.most_viewed)
         live = warn_if_many(live, ctx)
         runs = []
         for src in live:
