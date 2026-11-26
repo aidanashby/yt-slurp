@@ -574,12 +574,16 @@ def test_menu_buttons_open_with_a_real_click(app):
         app.root.update()
         menus = [w for w in set(app.root.winfo_children()) - before if w.winfo_class() == "Toplevel"]
         assert len(menus) == 1 and menus[0].winfo_viewable()
-        app.root.event_generate("<Button-1>")  # a click elsewhere closes it
+        app.root.event_generate("<Button-1>", x=300, y=300)  # a click elsewhere (not the resize edge) closes it
         assert not menus[0].winfo_exists()
 
 
 def test_fits_a_snapped_half_screen(app):
     app.root.geometry("683x700")
+    app.root.update()
+    # Tk adds room for side borders the window no longer has (TitleBar.strip)
+    extra = app.root.winfo_width() - 683
+    app.root.geometry(f"{683 - extra}x700")
     app.root.update()
     assert app.root.winfo_width() == 683
     for w in (app.slurp_btn, app.pause_btn, app.stop_btn, app.title_bar.buttons["Close"] if os.name == "nt" else app.stop_btn):
@@ -611,8 +615,12 @@ def test_slim_title_bar(app):
 def test_snap_fix_only_moves_a_misplaced_window():
     import yt_slurp_gui as gui
     second = (2560, 0, 4480, 1032)
-    left, right = (2553, 0, 3527, 1039), (3513, 0, 4487, 1039)
+    # No invisible side borders, so the edges sit exactly on the screen's edges
+    left, right = (2560, 0, 3520, 1039), (3520, 0, 4480, 1039)
     assert gui.snap_fix(left, second, (2561, 500)) is None
-    assert gui.snap_fix((3830, 0, 5291, 1100), second, (2561, 500)) == (2560, *left[1:])  # as Windows misplaced it
+    assert gui.snap_fix((3830, 0, 5291, 1100), second, (2561, 500)) == left  # as Windows misplaced it
     assert gui.snap_fix((3830, 0, 5291, 1100), second, (4479, 500)) == right
-    assert gui.snap_fix((3830, 0, 5291, 1100), second, (2561, 2)) == (2560, 0, 3527, 523)  # a corner
+    assert gui.snap_fix((3830, 0, 5291, 1100), second, (2561, 2)) == (2560, 0, 3520, 523)  # a corner
+    # Screens swapped: the second screen is to the left, with negative x
+    swapped = (-1920, 0, 0, 1032)
+    assert gui.snap_fix((-700, 0, 1280, 1100), swapped, (-5, 500)) == (-960, 0, 0, 1039)

@@ -1,6 +1,6 @@
 # yt-slurp: status
 
-Last updated: 25th November 2026 (0.2.6 release)
+Last updated: 26th November 2026 (after 0.2.6; not yet released)
 
 ## Where it is
 
@@ -15,6 +15,7 @@ yt-slurp 0.2.6 is released as a single self-contained `yt-slurp.exe` on GitHub's
   - checks GitHub for a newer release a few seconds after the window opens, shows a blue **Update** button near the top right, and updates itself with a restart;
   - built and attached to the release by `.github/workflows/build-exe.yml` when a release is published.
 - **`yt_slurp_gui.py`** (the window, Tkinter, dark, laid out after Audacity 4 with red and blue highlights, its own slim title bar, and a smile-and-tongue icon):
+  - a window snapped next to a join between screens with different scaling now meets the join exactly (26th November, unreleased): the window has no invisible side borders, and its 6 px side margin resizes it instead;
   - a two-row link box (links as editable blocks, Clear all) with a Slurp split button (the arrow does just normal videos, just Shorts or just live streams), Pause/Resume and Stop, the option to use a file of links, and a list of channels you've done before;
   - one output list for transcripts, WAVs, links and skipped videos, colour-coded, filtered by chips (all on by default) and by a name filter; names are the exact YouTube title, with any extra (part number, skip reason) at the end; the list only follows new items when you're already at the bottom;
   - a file pane that shows transcripts formatted, and becomes a Markdown editor when clicked: find and replace, Undo/Redo (10 steps), Save, Delete; only the tools that apply to the selection are shown, and they wrap in a narrow window;

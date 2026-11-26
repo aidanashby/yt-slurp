@@ -2,6 +2,11 @@
 
 All notable changes to yt-slurp. Dates are in UK format.
 
+## Unreleased
+
+### Fixed
+- A window snapped next to a join between screens with different scaling no longer leaves a 7 px gap at the join. The window has no invisible side borders now, and a 6 px margin at each side resizes it instead.
+
 ## 0.2.6 (25th November 2026)
 
 ### Added

@@ -1262,10 +1262,10 @@ class App:
 
     def build_top(self):
         top = tk.Frame(self.root, bg=CARD)
-        top.pack(fill="x")
+        top.pack(fill="x", padx=EDGE_GRIP)
         tk.Frame(top, bg=BORDER, height=1).pack(side="bottom", fill="x")
         inner = tk.Frame(top, bg=CARD)
-        inner.pack(fill="x", padx=12, pady=10)
+        inner.pack(fill="x", padx=12 - EDGE_GRIP, pady=10)
         self.url_box = LinkBox(inner, "Paste YouTube channel, playlist or video links", self.slurp)
         self.url_box.pack(side="left", fill="x", expand=True)
         self.url_var = self.url_box.var
@@ -1286,7 +1286,7 @@ class App:
         self.stop_btn.set_enabled(False)
 
         row = tk.Frame(top, bg=CARD)
-        row.pack(fill="x", padx=12, pady=(0, 10))
+        row.pack(fill="x", padx=12 - EDGE_GRIP, pady=(0, 10))
         link = tk.Label(row, text="Use a list of links from a file", bg=CARD, fg=LINK, font=(FONT, 9, "underline"),
                         cursor="hand2", takefocus=1, highlightthickness=1, highlightbackground=CARD,
                         highlightcolor=FOCUS)
@@ -1309,7 +1309,7 @@ class App:
 
     def build_middle(self):
         mid = tk.Frame(self.root, bg=BG)
-        mid.pack(fill="both", expand=True)
+        mid.pack(fill="both", expand=True, padx=EDGE_GRIP)
         panes = tk.PanedWindow(mid, orient="horizontal", bg=BG, sashwidth=6, bd=0, sashrelief="flat")
         panes.pack(fill="both", expand=True)
 
@@ -1421,7 +1421,7 @@ class App:
 
     def build_bottom(self):
         status = self.status_row = tk.Frame(self.root, bg=MENU_BG)
-        status.pack(side="bottom", fill="x")
+        status.pack(side="bottom", fill="x", padx=EDGE_GRIP)
         tk.Frame(status, bg=BORDER, height=1).pack(fill="x")
         self.status_label = tk.Label(status, text="", bg=MENU_BG, pady=6, padx=12, fg=MUTED, font=(FONT, 9), anchor="w", cursor="hand2")
         self.status_label.pack(side="left", fill="x", expand=True)
@@ -1429,8 +1429,8 @@ class App:
         self.bar = ttk.Progressbar(status, mode="determinate", length=220)
         self.bar.pack(side="right", padx=12)
 
-        btns = self.btn_row = tk.Frame(self.root, bg=CARD, padx=12, pady=8)
-        btns.pack(side="bottom", fill="x")
+        btns = self.btn_row = tk.Frame(self.root, bg=CARD, padx=12 - EDGE_GRIP, pady=8)
+        btns.pack(side="bottom", fill="x", padx=EDGE_GRIP)
         flow = FlowBar(btns)
         flow.pack(fill="x")
         buttons = []
@@ -2513,7 +2513,8 @@ def dark_title_bar(win) -> None:
         pass
 
 
-SNAP_FRAME = 7  # the invisible resize border, which hangs outside the visible window
+SNAP_FRAME = 7  # the invisible resize border below the visible window
+EDGE_GRIP = 6   # px margin at the left and right edges that resizes the window
 
 
 def snap_fix(window, work, pointer):
@@ -2530,8 +2531,10 @@ def snap_fix(window, work, pointer):
     corner = (bottom - top) // 12
     y1, y2 = (top, mid_y) if pointer[1] < top + corner else (mid_y, bottom) if pointer[1] > bottom - corner \
         else (top, bottom)
-    # A left edge even slightly on the next screen would be scaled as if it were all there
-    return max(left, x1 - SNAP_FRAME), y1, x2 + SNAP_FRAME, y2 + SNAP_FRAME
+    # No invisible border at the sides (TitleBar.strip removes it), so the
+    # edges can sit exactly on a screen join: a window edge even slightly on
+    # the next screen would be scaled as if the window were all there.
+    return x1, y1, x2, y2 + SNAP_FRAME
 
 
 class TitleBar(tk.Frame):
@@ -2571,12 +2574,17 @@ class TitleBar(tk.Frame):
                    if 0 <= e.x < e.widget.winfo_width() and 0 <= e.y < e.widget.winfo_height() else None)
             self.buttons[name] = b
         self.glyphs = ("\ue922", "\ue923") if font else ("\u25a1", "\u2750")
+        root.bind("<Motion>", self.edge_cursor, add="+")
+        root.bind("<Button-1>", self.edge_drag, add="+")
         root.bind("<Map>", lambda e: e.widget is root and self.strip(), add="+")
         root.bind("<Configure>", lambda e: e.widget is root and self.show_state(), add="+")
 
     def strip(self):
         """Hide Windows' caption by giving its space to the window. The caption
-        style stays, so Windows still animates, snaps and maximises as usual."""
+        style stays, so Windows still animates, snaps and maximises as usual.
+        The invisible side borders go too, so a snapped window's visible edge
+        is its real edge (see snap_fix); the window's own margin resizes it
+        from the sides instead (edge_drag)."""
         if self.old_proc:
             return
         import ctypes
@@ -2597,10 +2605,13 @@ class TitleBar(tk.Frame):
             if msg != 0x83 or not wp:  # WM_NCCALCSIZE
                 return u.CallWindowProcW(old, h, msg, wp, lp)
             rect = w.RECT.from_address(lp)
-            top = rect.top
+            left, top, right = rect.left, rect.top, rect.right
             u.CallWindowProcW(old, h, msg, wp, lp)
-            # Maximised windows hang over the screen edge by the frame's width
-            rect.top = top + (u.GetSystemMetrics(33) + u.GetSystemMetrics(92) if u.IsZoomed(h) else 0)
+            if u.IsZoomed(h):
+                # Maximised windows hang over the screen edge by the frame's width
+                rect.top = top + u.GetSystemMetrics(33) + u.GetSystemMetrics(92)
+            else:
+                rect.top, rect.left, rect.right = top, left, right
             return 0
         self.proc, self.old_proc = proc, old  # kept, or Windows would call freed memory
         u.SetWindowLongPtrW(hwnd, -4, ctypes.cast(proc, ctypes.c_void_p).value)
@@ -2611,6 +2622,29 @@ class TitleBar(tk.Frame):
         if self.old_proc:
             self.user32.SetWindowLongPtrW(self.hwnd, -4, self.old_proc)
             self.old_proc = 0
+
+    def side_edge(self, e):
+        """HT code for the resize edge under the pointer, or None. Only the
+        root's own margin counts, so widgets near the edge keep their clicks."""
+        if e.widget is not self.root or self.root.state() == "zoomed":
+            return None
+        w, h = self.root.winfo_width(), self.root.winfo_height()
+        side = "left" if e.x < EDGE_GRIP else "right" if e.x >= w - EDGE_GRIP else None
+        if side is None:
+            return None
+        bottom = e.y >= h - EDGE_GRIP * 2
+        return {("left", False): 10, ("right", False): 11, ("left", True): 16, ("right", True): 17}[side, bottom]
+
+    def edge_cursor(self, e):
+        code = self.side_edge(e)
+        if e.widget is self.root:
+            self.root.configure(cursor={10: "size_we", 11: "size_we", 16: "size_ne_sw", 17: "size_nw_se"}.get(code, ""))
+
+    def edge_drag(self, e):
+        code = self.side_edge(e)
+        if code and self.old_proc:
+            self.user32.ReleaseCapture()
+            self.user32.PostMessageW(self.hwnd, 0xA1, code, (e.y_root & 0xFFFF) << 16 | (e.x_root & 0xFFFF))
 
     def on_top_edge(self, e) -> bool:
         return e.y_root - self.winfo_rooty() < 5 and self.root.state() != "zoomed"
